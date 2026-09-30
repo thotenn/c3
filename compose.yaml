@@ -1,0 +1,25 @@
+# Minimal single-node deployment. Put it behind your reverse proxy (TLS terminates there).
+#   cp .env.example .env   # fill SECRET_KEY_BASE and PHX_HOST
+#   make docker-up
+services:
+  c3:
+    build: .
+    image: c3:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_PATH: /data/c3.db
+    ports:
+      - "${C3_HOST_PORT:-4000}:4000"
+    volumes:
+      - c3_data:/data
+    # Also declared here: podman ignores the Dockerfile HEALTHCHECK when building OCI images.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:4000/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+volumes:
+  c3_data:
