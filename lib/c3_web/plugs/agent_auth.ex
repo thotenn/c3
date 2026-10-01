@@ -9,7 +9,10 @@ defmodule C3Web.Plugs.AgentAuth do
   left → `401`. The IP ban is not checked here: a live token works from a banned IP.
 
   Every authenticated request counts as a sign of life (`Sessions.touch_seen/2`, throttled):
-  it is what keeps the agent's claims from expiring.
+  it is what keeps the agent's claims from expiring. It also counts as activity on the
+  session (`Sessions.touch_activity/2`, which postpones the idle close) unless the plug is
+  given `activity: false` — the event feed and `/heartbeat`, so a watcher left running does
+  not keep a forgotten session open until its max TTL.
   """
   @behaviour Plug
 
@@ -19,10 +22,10 @@ defmodule C3Web.Plugs.AgentAuth do
   alias C3Web.ApiError
 
   @impl true
-  def init(opts), do: opts
+  def init(opts), do: Keyword.validate!(opts, activity: true)
 
   @impl true
-  def call(conn, _opts) do
+  def call(conn, opts) do
     with {:ok, token} <- bearer(conn),
          %Sessions.Agent{session: session} = agent <- Sessions.get_agent_by_token(token) do
       cond do
@@ -36,7 +39,9 @@ defmodule C3Web.Plugs.AgentAuth do
           ApiError.send_error(conn, 401, "unauthorized", "The token was revoked")
 
         true ->
-          agent = Sessions.touch_seen(agent)
+          now = DateTime.utc_now()
+          agent = Sessions.touch_seen(agent, now)
+          session = if opts[:activity], do: Sessions.touch_activity(session, now), else: session
           conn |> assign(:current_agent, agent) |> assign(:current_session, session)
       end
     else

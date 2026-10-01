@@ -20,6 +20,24 @@ defmodule C3.Security do
     |> Repo.all()
   end
 
+  @history_days 30
+
+  @doc """
+  Drops the security history older than #{@history_days} days: join failures, and bans that
+  ended (expired or lifted) that long ago. Returns `%{join_failures: n, ip_bans: n}`.
+  """
+  def purge_history(now \\ DateTime.utc_now()) do
+    cutoff = DateTime.add(now, -@history_days * 86_400, :second)
+    {failures, _} = JoinFailure |> where([f], f.inserted_at < ^cutoff) |> Repo.delete_all()
+
+    {bans, _} =
+      IpBan
+      |> where([b], b.banned_until < ^cutoff or b.lifted_at < ^cutoff)
+      |> Repo.delete_all()
+
+    %{join_failures: failures, ip_bans: bans}
+  end
+
   @doc "When the ban of `ip` ends, or `nil` if `create`/`join` are allowed from it."
   def banned_until(ip, now \\ DateTime.utc_now()) do
     if allowlisted?(ip), do: nil, else: BanCache.banned_until(ip, now)

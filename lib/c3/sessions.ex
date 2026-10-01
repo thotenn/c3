@@ -255,37 +255,49 @@ defmodule C3.Sessions do
   route of the session answers `410`. `{:error, :session_closed}` if it already was.
   """
   def close(%Agent{} = agent) do
-    now = now()
-
     Repo.transaction(fn ->
-      {closed, _} =
-        Session
-        |> where([s], s.id == ^agent.session_id and s.status == :open)
-        |> Repo.update_all(
-          set: [
-            status: :closed,
-            closed_at: now,
-            closed_by: agent.name,
-            close_reason: :manual,
-            updated_at: now
-          ]
-        )
+      close_session!(agent.session_id, :manual, agent, DateTime.utc_now())
+    end)
+  end
 
-      if closed == 0, do: Repo.rollback(:session_closed)
+  @doc """
+  Closes the open session `session_id` inside the caller's transaction: status, `closed_at`,
+  `closed_by` (the actor's name, or `"system"`) and `reason`, every active token revoked and
+  `session.closed` emitted. Rolls back with `:session_closed` if it was not open, or if
+  `where` (an extra condition on the session row, e.g. still idle) does not hold. Returns
+  the session.
+  """
+  def close_session!(session_id, reason, actor, now, where \\ dynamic(true)) do
+    closed_by = if actor, do: actor.name, else: "system"
 
-      Agent
-      |> where([a], a.session_id == ^agent.session_id and a.status == :active)
-      |> Repo.update_all(set: [status: :revoked, left_at: now, updated_at: now])
-
-      session = Repo.get!(Session, agent.session_id)
-
-      Events.append!(session, :session_closed,
-        actor: agent,
-        payload: %{closed_by: agent.name, reason: :manual}
+    {closed, _} =
+      Session
+      |> where([s], s.id == ^session_id and s.status == :open)
+      |> where(^where)
+      |> Repo.update_all(
+        set: [
+          status: :closed,
+          closed_at: now,
+          closed_by: closed_by,
+          close_reason: reason,
+          updated_at: now
+        ]
       )
 
-      Repo.reload!(session)
-    end)
+    if closed == 0, do: Repo.rollback(:session_closed)
+
+    Agent
+    |> where([a], a.session_id == ^session_id and a.status == :active)
+    |> Repo.update_all(set: [status: :revoked, left_at: now, updated_at: now])
+
+    session = Repo.get!(Session, session_id)
+
+    Events.append!(session, :session_closed,
+      actor: actor,
+      payload: %{closed_by: closed_by, reason: reason}
+    )
+
+    Repo.reload!(session)
   end
 
   @alert_types [:security_join_failed, :session_joins_locked]
@@ -341,6 +353,22 @@ defmodule C3.Sessions do
       %{agent | last_seen_at: now}
     else
       agent
+    end
+  end
+
+  @doc """
+  Records activity on the session at `now` — what postpones its close for inactivity
+  (`session_idle_ttl`). Throttled like `touch_seen/2`. Returns the session, updated or not.
+  """
+  def touch_activity(%Session{} = session, now \\ DateTime.utc_now()) do
+    if DateTime.diff(now, session.last_activity_at, :second) >= Config.get(:last_seen_throttle) do
+      Session
+      |> where([s], s.id == ^session.id and s.last_activity_at < ^now)
+      |> Repo.update_all(set: [last_activity_at: now])
+
+      %{session | last_activity_at: now}
+    else
+      session
     end
   end
 

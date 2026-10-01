@@ -26,6 +26,18 @@ defmodule C3Web.Router do
     plug C3Web.Plugs.Idempotency
   end
 
+  # The watcher's feed: a sign of life of the agent, not activity on the session.
+  pipeline :feed do
+    plug C3Web.Plugs.AgentAuth, activity: false
+    plug C3Web.Plugs.RateLimit, :token
+  end
+
+  # SSE clients send `Accept: text/event-stream`, which `:v1` would refuse with a 406.
+  pipeline :sse do
+    plug C3Web.Plugs.RealIp
+    plug C3Web.Plugs.RateLimit, :ip
+  end
+
   scope "/", C3Web do
     pipe_through :browser
 
@@ -63,6 +75,19 @@ defmodule C3Web.Router do
 
       get "/inbox", InboxController, :show
     end
+
+    scope "/" do
+      pipe_through :feed
+
+      get "/sessions/:code/events", EventController, :index
+      post "/heartbeat", EventController, :heartbeat
+    end
+  end
+
+  scope "/v1", C3Web.V1 do
+    pipe_through [:sse, :feed]
+
+    get "/sessions/:code/events/stream", EventController, :stream
   end
 
   # Enable LiveDashboard in development

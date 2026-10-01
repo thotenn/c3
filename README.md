@@ -49,6 +49,19 @@ curl http://localhost:4000/healthz   # {"status":"ok"}
 | `DATABASE_PATH` | no | `/data/c3.db` | SQLite file (on the `/data` volume). |
 | `C3_HOST_PORT` | no | `4000` | Host port published by `compose.yaml`. |
 
+Every `C3_*` setting (security, threads, session lifecycle, event feed) is optional and listed,
+with its default, in [`.env.example`](.env.example).
+
+### Behind a reverse proxy
+
+- **Client IP.** Set `C3_REAL_IP_HEADER` (e.g. `x-forwarded-for`) and make sure the proxy's
+  address is in `C3_TRUSTED_PROXIES`; otherwise every ban lands on the proxy.
+- **Long-poll.** `GET /v1/sessions/{code}/events?wait=` holds the request up to
+  `C3_LONG_POLL_MAX_WAIT` seconds (30). The proxy's read timeout must be longer than that.
+- **SSE.** `/v1/sessions/{code}/events/stream` sends `x-accel-buffering: no` and a keepalive
+  comment every `C3_SSE_KEEPALIVE_SECONDS` (15); turn response buffering off for that path if
+  the proxy ignores the header, and keep its idle timeout above the keepalive.
+
 Migrations run automatically on every start. `make docker-smoke` builds the image and checks
 `/healthz` in a throwaway container. Works with Docker or Podman.
 

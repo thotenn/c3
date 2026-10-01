@@ -1,9 +1,12 @@
 defmodule C3.Sweeper do
   @moduledoc """
   The periodic jobs, every `sweep_interval_ms` (one minute): expire the claims of silent
-  agents (`C3.Threads.expire_claims/1`) and drop idempotency keys older than a day
-  (`C3.Idempotency.purge/1`). One process for the whole node; `sweeper: false` keeps it from
-  starting (test).
+  agents (`C3.Threads.expire_claims/1`); warn, close and purge sessions
+  (`C3.Sessions.Lifecycle`); drop idempotency keys older than a day
+  (`C3.Idempotency.purge/1`) and the old security history (`C3.Security.purge_history/1`).
+  One process for the whole node; `sweeper: false` keeps it from starting (test).
+
+  A session already past its close gets no warning: it is just closed.
   """
   use GenServer
 
@@ -15,7 +18,11 @@ defmodule C3.Sweeper do
   def run(now \\ DateTime.utc_now()) do
     %{
       claims_expired: C3.Threads.expire_claims(now),
-      idempotency_keys_purged: C3.Idempotency.purge(now)
+      sessions_warned: C3.Sessions.Lifecycle.warn_closing(now),
+      sessions_closed: C3.Sessions.Lifecycle.close_expired(now),
+      sessions_purged: C3.Sessions.Lifecycle.purge(now),
+      idempotency_keys_purged: C3.Idempotency.purge(now),
+      security_purged: C3.Security.purge_history(now)
     }
   end
 
