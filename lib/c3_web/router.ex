@@ -14,6 +14,17 @@ defmodule C3Web.Router do
     plug :accepts, ["json"]
   end
 
+  pipeline :v1 do
+    plug :accepts, ["json"]
+    plug C3Web.Plugs.RealIp
+    plug C3Web.Plugs.RateLimit, :ip
+  end
+
+  pipeline :agent do
+    plug C3Web.Plugs.AgentAuth
+    plug C3Web.Plugs.RateLimit, :token
+  end
+
   scope "/", C3Web do
     pipe_through :browser
 
@@ -24,6 +35,22 @@ defmodule C3Web.Router do
     pipe_through :api
 
     get "/healthz", HealthController, :show
+  end
+
+  scope "/v1", C3Web.V1 do
+    pipe_through :v1
+
+    post "/sessions", SessionController, :create
+    post "/sessions/:code/join", SessionController, :join
+
+    scope "/" do
+      pipe_through :agent
+
+      get "/sessions/:code", SessionController, :show
+      post "/sessions/:code/leave", SessionController, :leave
+      post "/sessions/:code/close", SessionController, :close
+      post "/sessions/:code/unlock", SessionController, :unlock
+    end
   end
 
   # Enable LiveDashboard in development

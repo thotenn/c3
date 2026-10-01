@@ -7,14 +7,16 @@ defmodule C3.Application do
 
   @impl true
   def start(_type, _args) do
+    C3.Config.validate!()
+
     children = [
       C3Web.Telemetry,
       C3.Repo,
       {Ecto.Migrator, repos: Application.fetch_env!(:c3, :ecto_repos), skip: skip_migrations?()},
       {DNSCluster, query: Application.get_env(:c3, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: C3.PubSub},
-      # Start a worker by calling: C3.Worker.start_link(arg)
-      # {C3.Worker, arg},
+      C3.Security.BanCache,
+      C3.RateLimiter,
       # Start to serve requests, typically the last entry
       C3Web.Endpoint
     ]

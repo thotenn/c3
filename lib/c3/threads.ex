@@ -19,13 +19,14 @@ defmodule C3.Threads do
   @doc """
   The threads of a session, most recently active first.
 
-  Options: `:status` keeps only the threads with that status.
+  Options: `:status` keeps only the threads with that status; `:preload` preloads.
   """
   def list_threads(%Session{id: session_id}, opts \\ []) do
     Thread
     |> where(session_id: ^session_id)
     |> filter_status(opts[:status])
     |> order_by(desc: :last_message_at, desc: :number)
+    |> preload(^Keyword.get(opts, :preload, []))
     |> Repo.all()
   end
 

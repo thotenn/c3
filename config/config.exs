@@ -48,6 +48,9 @@ config :logger, :default_formatter,
   format: "$time $metadata[$level] $message\n",
   metadata: [:request_id]
 
+# IANA zones for C3_TZ (the midnight an IP ban ends at)
+config :elixir, :time_zone_database, Tz.TimeZoneDatabase
+
 # Use Jason for JSON parsing in Phoenix
 config :phoenix, :json_library, Jason
 

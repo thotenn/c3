@@ -2,15 +2,48 @@ defmodule C3.Events do
   @moduledoc """
   The per-session event log the watcher consumes.
 
-  Read-only for now: events are appended by the session server (F3) and fanned out in F4.
+  `append!/3` takes the next `seq` with an atomic `UPDATE … SET event_seq = event_seq + 1`
+  and must run inside the caller's transaction, so the counter and the event commit together.
+  Fan-out arrives in F4.
   """
   import Ecto.Query
 
   alias C3.Events.Event
   alias C3.Repo
-  alias C3.Sessions.Session
+  alias C3.Sessions.{Agent, Session}
 
   @default_limit 100
+
+  @doc """
+  Appends an event of `type` to the session with the next `seq`. Call inside a transaction.
+
+  Options: `:actor` (an `Agent`), `:payload` (a map).
+  """
+  def append!(%Session{id: session_id}, type, opts \\ []) do
+    {1, [seq]} =
+      Session
+      |> where(id: ^session_id)
+      |> select([s], s.event_seq)
+      |> Repo.update_all(inc: [event_seq: 1])
+
+    actor_id =
+      case opts[:actor] do
+        %Agent{id: id} -> id
+        nil -> nil
+      end
+
+    %Event{session_id: session_id, actor_agent_id: actor_id}
+    |> Event.changeset(%{seq: seq, type: type, payload: Keyword.get(opts, :payload, %{})})
+    |> Repo.insert!()
+  end
+
+  @doc "When the last event of `type` happened in the session, or `nil`."
+  def last_at(%Session{id: session_id}, type) do
+    Event
+    |> where(session_id: ^session_id, type: ^type)
+    |> select([e], max(e.inserted_at))
+    |> Repo.one()
+  end
 
   @doc """
   The events of a session with `seq > after_seq`, in order.

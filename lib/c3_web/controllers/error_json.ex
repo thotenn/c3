@@ -1,21 +1,26 @@
 defmodule C3Web.ErrorJSON do
   @moduledoc """
-  This module is invoked by your endpoint in case of errors on JSON requests.
-
-  See config/config.exs.
+  Renders the errors Phoenix raises on JSON requests (no route, a body that does not parse,
+  a crash) with the API's stable shape, `C3Web.ApiError`.
   """
+  alias C3Web.ApiError
 
-  # If you want to customize a particular status code,
-  # you may add your own clauses, such as:
-  #
-  # def render("500.json", _assigns) do
-  #   %{errors: %{detail: "Internal Server Error"}}
-  # end
+  @codes %{
+    "400" => "invalid_request",
+    "401" => "unauthorized",
+    "403" => "forbidden",
+    "404" => "not_found",
+    "409" => "conflict",
+    "410" => "session_closed",
+    "413" => "too_large",
+    "415" => "invalid_request",
+    "422" => "invalid_request",
+    "429" => "rate_limited"
+  }
 
-  # By default, Phoenix returns the status message from
-  # the template name. For example, "404.json" becomes
-  # "Not Found".
   def render(template, _assigns) do
-    %{errors: %{detail: Phoenix.Controller.status_message_from_template(template)}}
+    status = template |> String.split(".") |> hd()
+    code = Map.get(@codes, status, "internal_error")
+    ApiError.body(code, Phoenix.Controller.status_message_from_template(template))
   end
 end

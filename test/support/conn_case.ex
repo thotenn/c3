@@ -33,6 +33,21 @@ defmodule C3Web.ConnCase do
 
   setup tags do
     C3.DataCase.setup_sandbox(tags)
-    {:ok, conn: Phoenix.ConnTest.build_conn()}
+    {:ok, conn: with_ip(Phoenix.ConnTest.build_conn(), unique_ip())}
   end
+
+  @doc """
+  A fresh client IP from 198.18.0.0/15 (benchmarking range). Bans live in a global ETS
+  table, so every test gets its own address and one test's ban never blocks another.
+  """
+  def unique_ip do
+    n = System.unique_integer([:positive])
+    {198, 18 + rem(div(n, 65_536), 2), rem(div(n, 256), 256), rem(n, 256)}
+  end
+
+  @doc "The same connection, coming from `ip` (a tuple)."
+  def with_ip(conn, ip), do: %{conn | remote_ip: ip}
+
+  @doc "The string form of an IP tuple, as C3 stores it."
+  def ip_string(ip), do: ip |> :inet.ntoa() |> List.to_string()
 end

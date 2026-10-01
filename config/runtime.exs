@@ -22,6 +22,26 @@ end
 
 config :c3, C3Web.Endpoint, http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
+# C3 settings: only the variables that are set override the defaults in C3.Config.
+csv = fn value -> value |> String.split(",", trim: true) |> Enum.map(&String.trim/1) end
+
+c3_env = [
+  tz: {"C3_TZ", & &1},
+  secret_digits: {"C3_SECRET_DIGITS", &String.to_integer/1},
+  session_max_ttl: {"C3_SESSION_MAX_TTL_HOURS", &(String.to_integer(&1) * 3600)},
+  join_lock_ips: {"C3_JOIN_LOCK_IPS", &String.to_integer/1},
+  unknown_code_limit: {"C3_UNKNOWN_CODE_LIMIT", &String.to_integer/1},
+  real_ip_header: {"C3_REAL_IP_HEADER", &String.downcase(String.trim(&1))},
+  trusted_proxies: {"C3_TRUSTED_PROXIES", csv},
+  ip_allowlist: {"C3_IP_ALLOWLIST", csv},
+  rate_limit_token: {"C3_RATE_LIMIT_TOKEN", &String.to_integer/1},
+  rate_limit_ip: {"C3_RATE_LIMIT_IP", &String.to_integer/1}
+]
+
+for {key, {var, parse}} <- c3_env, value <- [System.get_env(var)], value not in [nil, ""] do
+  config :c3, [{key, parse.(value)}]
+end
+
 if config_env() == :prod do
   database_path =
     System.get_env("DATABASE_PATH") ||
@@ -32,7 +52,9 @@ if config_env() == :prod do
 
   config :c3, C3.Repo,
     database: database_path,
-    pool_size: String.to_integer(System.get_env("POOL_SIZE") || "5")
+    pool_size: String.to_integer(System.get_env("POOL_SIZE") || "5"),
+    # Writers take the lock up front instead of failing on a read-to-write upgrade.
+    default_transaction_mode: :immediate
 
   # The secret key base is used to sign/encrypt cookies and other secrets.
   # A default value is used in config/dev.exs and config/test.exs but you

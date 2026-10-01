@@ -1,0 +1,60 @@
+defmodule C3Web.V1.SessionController do
+  @moduledoc "`/v1/sessions`: create, join, show, leave, close and unlock (spec, *API › Sesión*)."
+  use C3Web, :controller
+
+  alias C3.{Sessions, Threads}
+
+  action_fallback C3Web.V1.FallbackController
+
+  def create(conn, params) do
+    with {:ok, created} <- Sessions.create_session(params, meta(conn)) do
+      conn |> put_status(:created) |> render(:created, created)
+    end
+  end
+
+  def join(conn, %{"code" => code} = params) do
+    with {:ok, joined} <- Sessions.join_session(code, params, meta(conn)) do
+      conn |> put_status(:created) |> render(:joined, joined)
+    end
+  end
+
+  def show(conn, _params) do
+    %{current_session: session, current_agent: agent} = conn.assigns
+
+    render(conn, :show,
+      session: session,
+      you: agent,
+      agents: Sessions.list_agents(session),
+      threads: Threads.list_threads(session, preload: :opened_by_agent)
+    )
+  end
+
+  def leave(conn, _params) do
+    with {:ok, released} <- Sessions.leave(conn.assigns.current_agent) do
+      json(conn, %{left: true, released: released})
+    end
+  end
+
+  def close(conn, _params) do
+    with {:ok, session} <- Sessions.close(conn.assigns.current_agent) do
+      json(conn, %{
+        status: session.status,
+        closed_at: session.closed_at,
+        closed_by: session.closed_by
+      })
+    end
+  end
+
+  def unlock(conn, _params) do
+    with {:ok, unlocked?} <- Sessions.unlock_joins(conn.assigns.current_agent) do
+      json(conn, %{joins_locked: false, unlocked: unlocked?})
+    end
+  end
+
+  defp meta(conn) do
+    %{
+      ip: conn.assigns.client_ip,
+      user_agent: conn |> get_req_header("user-agent") |> List.first()
+    }
+  end
+end

@@ -17,6 +17,13 @@ config :c3, C3Web.Endpoint,
   secret_key_base: "VHtnTJ8/ZshSCEBfZC9vkRoP4GcDNGyK+E3yHqxfqBuyvsq5DQxTJ+glt14KBxkO",
   server: false
 
+# Cheap Argon2 parameters: the cost only matters against an offline attack.
+config :argon2_elixir, t_cost: 1, m_cost: 8
+
+# Each test gets its own client IP (see ConnCase); a high per-IP limit keeps unrelated tests
+# from tripping it. The rate-limit tests lower it themselves.
+config :c3, rate_limit_ip: 100_000
+
 # Print only warnings and errors during test
 config :logger, level: :warning
 
