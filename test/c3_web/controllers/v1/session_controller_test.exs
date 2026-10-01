@@ -1,5 +1,5 @@
 defmodule C3Web.V1.SessionControllerTest do
-  use C3Web.ConnCase, async: true
+  use C3Web.ConnCase
 
   import C3.Fixtures
 

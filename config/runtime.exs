@@ -35,7 +35,9 @@ c3_env = [
   trusted_proxies: {"C3_TRUSTED_PROXIES", csv},
   ip_allowlist: {"C3_IP_ALLOWLIST", csv},
   rate_limit_token: {"C3_RATE_LIMIT_TOKEN", &String.to_integer/1},
-  rate_limit_ip: {"C3_RATE_LIMIT_IP", &String.to_integer/1}
+  rate_limit_ip: {"C3_RATE_LIMIT_IP", &String.to_integer/1},
+  max_body_bytes: {"C3_MAX_BODY_BYTES", &String.to_integer/1},
+  claim_ttl: {"C3_CLAIM_TTL_MINUTES", &(String.to_integer(&1) * 60)}
 ]
 
 for {key, {var, parse}} <- c3_env, value <- [System.get_env(var)], value not in [nil, ""] do

@@ -26,6 +26,26 @@ defmodule C3Web.V1.FallbackController do
     ApiError.send_error(conn, 423, "joins_locked", "The session does not accept new agents")
   end
 
+  def call(conn, {:error, :thread_not_found}) do
+    ApiError.send_error(conn, 404, "not_found", "No such thread in this session")
+  end
+
+  def call(conn, {:error, {:invalid, message, details}}) do
+    ApiError.send_error(conn, 422, "invalid_request", message, details)
+  end
+
+  def call(conn, {:error, {:forbidden, message}}) do
+    ApiError.send_error(conn, 403, "forbidden", message)
+  end
+
+  def call(conn, {:error, {:conflict, message, details}}) do
+    ApiError.send_error(conn, 409, "conflict", message, details)
+  end
+
+  def call(conn, {:error, {:too_large, message}}) do
+    ApiError.send_error(conn, 413, "too_large", message)
+  end
+
   def call(conn, {:error, %Ecto.Changeset{} = changeset}) do
     errors = Ecto.Changeset.traverse_errors(changeset, &translate_error/1)
     ApiError.send_error(conn, 422, "invalid_request", "Invalid parameters", errors)

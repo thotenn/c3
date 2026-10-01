@@ -9,8 +9,6 @@ defmodule C3.Threads.Message do
   alias C3.Sessions.{Agent, Session}
   alias C3.Threads.Thread
 
-  @default_max_body_bytes 65_536
-
   schema "messages" do
     field :number, :integer
     field :kind, Ecto.Enum, values: [:request, :response, :note, :system]
@@ -33,8 +31,8 @@ defmodule C3.Threads.Message do
 
   @fields ~w(number kind body to_target to_label request_state claimed_at resolved_at)a
 
-  @doc "The maximum body size in bytes (`:max_body_bytes` in the `:c3` app env, 64 KB by default)."
-  def max_body_bytes, do: Application.get_env(:c3, :max_body_bytes, @default_max_body_bytes)
+  @doc "The maximum body size in bytes (`C3.Config`, `:max_body_bytes`)."
+  def max_body_bytes, do: C3.Config.get(:max_body_bytes)
 
   def changeset(message, attrs) do
     message

@@ -1,11 +1,15 @@
 defmodule C3Web.Plugs.AgentAuth do
   @moduledoc """
-  Authenticates an agent by `Authorization: Bearer <token>` for the routes of session
-  `:code`, and assigns `current_agent` and `current_session`.
+  Authenticates an agent by `Authorization: Bearer <token>`, and assigns `current_agent` and
+  `current_session`. On a route with `:code` the token must belong to that session; on the
+  others (`/threads/:id`, `/inbox`) the token itself says which session it is.
 
-  Order of the checks: no or unknown token → `401`; a token of another session → `403`; a
-  closed session → `410` (also for the tokens its close revoked); an agent that left → `401`.
-  The IP ban is not checked here: a live token works from a banned IP.
+  Order of the checks: no or unknown token → `401`; a token of another session than `:code`
+  → `403`; a closed session → `410` (also for the tokens its close revoked); an agent that
+  left → `401`. The IP ban is not checked here: a live token works from a banned IP.
+
+  Every authenticated request counts as a sign of life (`Sessions.touch_seen/2`, throttled):
+  it is what keeps the agent's claims from expiring.
   """
   @behaviour Plug
 
@@ -32,6 +36,7 @@ defmodule C3Web.Plugs.AgentAuth do
           ApiError.send_error(conn, 401, "unauthorized", "The token was revoked")
 
         true ->
+          agent = Sessions.touch_seen(agent)
           conn |> assign(:current_agent, agent) |> assign(:current_session, session)
       end
     else
@@ -46,7 +51,9 @@ defmodule C3Web.Plugs.AgentAuth do
     end
   end
 
+  defp same_session?(nil, _session_code), do: true
+
   defp same_session?(code, session_code) do
-    Credentials.normalize_code(code || "") == {:ok, session_code}
+    Credentials.normalize_code(code) == {:ok, session_code}
   end
 end

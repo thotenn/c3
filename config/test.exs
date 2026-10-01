@@ -24,6 +24,9 @@ config :argon2_elixir, t_cost: 1, m_cost: 8
 # from tripping it. The rate-limit tests lower it themselves.
 config :c3, rate_limit_ip: 100_000
 
+# The sweeper would touch the DB outside the sandbox; tests call its jobs directly.
+config :c3, sweeper: false
+
 # Print only warnings and errors during test
 config :logger, level: :warning
 

@@ -17,6 +17,7 @@ defmodule C3.Events.Event do
     thread_status_changed: "thread.status_changed",
     request_claimed: "request.claimed",
     request_claim_expired: "request.claim_expired",
+    request_cancelled: "request.cancelled",
     security_join_failed: "security.join_failed",
     session_joins_locked: "session.joins_locked",
     session_joins_unlocked: "session.joins_unlocked",

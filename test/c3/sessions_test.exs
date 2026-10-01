@@ -1,5 +1,5 @@
 defmodule C3.SessionsTest do
-  use C3.DataCase, async: true
+  use C3.DataCase
 
   import C3.Fixtures
 

@@ -23,6 +23,7 @@ defmodule C3Web.Router do
   pipeline :agent do
     plug C3Web.Plugs.AgentAuth
     plug C3Web.Plugs.RateLimit, :token
+    plug C3Web.Plugs.Idempotency
   end
 
   scope "/", C3Web do
@@ -50,6 +51,17 @@ defmodule C3Web.Router do
       post "/sessions/:code/leave", SessionController, :leave
       post "/sessions/:code/close", SessionController, :close
       post "/sessions/:code/unlock", SessionController, :unlock
+
+      get "/sessions/:code/threads", ThreadController, :index
+      post "/sessions/:code/threads", ThreadController, :create
+      get "/threads/:id", ThreadController, :show
+      post "/threads/:id/messages", ThreadController, :post_message
+      post "/threads/:id/claim", ThreadController, :claim
+      post "/threads/:id/cancel", ThreadController, :cancel
+      post "/threads/:id/finish", ThreadController, :finish
+      post "/threads/:id/reopen", ThreadController, :reopen
+
+      get "/inbox", InboxController, :show
     end
   end
 

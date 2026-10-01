@@ -15,6 +15,10 @@ defmodule C3.Config do
   | `:ip_allowlist` | `C3_IP_ALLOWLIST` | `[]` — CIDRs that are never banned |
   | `:rate_limit_token` | `C3_RATE_LIMIT_TOKEN` | `120` requests per minute and token |
   | `:rate_limit_ip` | `C3_RATE_LIMIT_IP` | `300` requests per minute and IP |
+  | `:max_body_bytes` | `C3_MAX_BODY_BYTES` | `65536` — a message body, in bytes; over it → `413` |
+  | `:claim_ttl` | `C3_CLAIM_TTL_MINUTES` | 30 min, in seconds — a claim whose agent stays silent that long goes back to `open` |
+  | `:last_seen_throttle` | — | `60` seconds between two `last_seen_at` writes of an agent |
+  | `:sweeper` | — | `true` — run `C3.Sweeper` (off in test, where the sandbox owns the DB) |
   """
 
   @defaults [
@@ -28,7 +32,12 @@ defmodule C3.Config do
     ip_allowlist: [],
     rate_limit_token: 120,
     rate_limit_ip: 300,
-    rate_limit_window_ms: 60_000
+    rate_limit_window_ms: 60_000,
+    max_body_bytes: 65_536,
+    claim_ttl: 30 * 60,
+    last_seen_throttle: 60,
+    sweeper: true,
+    sweep_interval_ms: 60_000
   ]
 
   @doc "The value of `key`, or its default."

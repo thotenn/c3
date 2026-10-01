@@ -1,7 +1,8 @@
 defmodule C3.Threads.Thread do
   @moduledoc """
   A thread of a session, `T<number>`. `status` is a cache of the state derived from the
-  thread's requests: only the session server writes it. See `schema.md` §3.
+  thread's requests: only `C3.Threads` writes it, in the transaction that changed them. See
+  `schema.md` §3.
   """
   use C3.Schema
 

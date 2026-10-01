@@ -4,15 +4,15 @@ defmodule C3.Sessions do
   the join lock.
 
   Every write that moves a counter (`next_agent_number`, `event_seq`) runs in one
-  transaction with an atomic `UPDATE … SET n = n + 1`, so no session process is needed yet.
+  transaction with an atomic `UPDATE … SET n = n + 1`, so no session process is needed (see
+  `C3.Threads` for how thread writes are serialized).
   Security checks (bans, failures, the lock) live in `C3.Security`; this module decides when
   to apply them.
   """
   import Ecto.Query
 
-  alias C3.{Config, Credentials, Events, Repo, Security}
+  alias C3.{Config, Credentials, Events, Repo, Security, Threads}
   alias C3.Sessions.{Agent, IdempotencyKey, Session}
-  alias C3.Threads.{Message, Thread}
 
   @type meta :: %{ip: String.t(), user_agent: String.t() | nil}
 
@@ -229,37 +229,23 @@ defmodule C3.Sessions do
   end
 
   @doc """
-  The agent leaves: its token stops working and its `claimed` requests go back to `open`.
-  Returns `{:ok, released}` with the `T<thread>.<message>` refs it released.
+  The agent leaves: its token stops working and its `claimed` requests go back to `open`, with
+  the status of their threads recomputed in the same transaction. Returns `{:ok, released}`
+  with the `T<thread>.<message>` refs it released.
   """
   def leave(%Agent{} = agent) do
     now = now()
 
     Repo.transaction(fn ->
       agent |> Agent.changeset(%{status: :left, left_at: now}) |> Repo.update!()
-
-      claimed =
-        from m in Message,
-          where: m.claimed_by_agent_id == ^agent.id and m.request_state == :claimed
-
-      released =
-        claimed
-        |> join(:inner, [m], t in Thread, on: t.id == m.thread_id)
-        |> order_by([m, t], [t.number, m.number])
-        |> select([m, t], fragment("'T' || ? || '.' || ?", t.number, m.number))
-        |> Repo.all()
-
-      # threads.status is a cache of the derived state; recomputing it is the session
-      # server's job (F3). Until then nothing can claim a request.
-      Repo.update_all(claimed,
-        set: [request_state: :open, claimed_by_agent_id: nil, claimed_at: nil]
-      )
+      {released, thread_ids} = Threads.release_claims!(agent)
 
       Events.append!(%Session{id: agent.session_id}, :agent_left,
         actor: agent,
         payload: %{name: agent.name, released: released}
       )
 
+      Threads.refresh_threads!(thread_ids, agent)
       released
     end)
   end
@@ -300,6 +286,62 @@ defmodule C3.Sessions do
 
       Repo.reload!(session)
     end)
+  end
+
+  @alert_types [:security_join_failed, :session_joins_locked]
+
+  @doc """
+  What the agent has not seen yet, oldest first, and marks it seen — `/inbox` shows each one
+  once:
+
+    * the security alerts of its session (`security.join_failed`, `session.joins_locked`);
+    * the `request.cancelled` of requests it was working on or could have taken: claimed by
+      it, addressed to it, to its label, or to `any` from someone else. Its own cancellations
+      are left out.
+  """
+  def take_notices(%Agent{} = agent) do
+    events =
+      C3.Events.Event
+      |> where([e], e.session_id == ^agent.session_id and e.seq > ^agent.alerts_seen_seq)
+      |> where([e], e.type in ^[:request_cancelled | @alert_types])
+      |> order_by(:seq)
+      |> Repo.all()
+
+    with [_ | _] <- events do
+      last = List.last(events).seq
+
+      Agent
+      |> where([a], a.id == ^agent.id and a.alerts_seen_seq < ^last)
+      |> Repo.update_all(set: [alerts_seen_seq: last])
+    end
+
+    Enum.filter(events, &(&1.type in @alert_types or cancelled_for?(&1.payload, agent)))
+  end
+
+  defp cancelled_for?(%{"cancelled_by" => name}, %Agent{name: name}), do: false
+
+  defp cancelled_for?(payload, %Agent{name: name, label: label}) do
+    case payload do
+      %{"claimed_by" => ^name} -> true
+      %{"to" => ^name} -> true
+      %{"to" => "any", "author" => author} -> author != name
+      %{"to" => "label:" <> target} -> target == label
+      _ -> false
+    end
+  end
+
+  @doc """
+  Records that the agent was seen at `now`, at most once per `last_seen_throttle` seconds
+  (every authenticated request counts, but not every one writes). Returns the agent, updated
+  or not.
+  """
+  def touch_seen(%Agent{} = agent, now \\ DateTime.utc_now()) do
+    if DateTime.diff(now, agent.last_seen_at, :second) >= Config.get(:last_seen_throttle) do
+      Agent |> where(id: ^agent.id) |> Repo.update_all(set: [last_seen_at: now])
+      %{agent | last_seen_at: now}
+    else
+      agent
+    end
   end
 
   defp add_agent!(%Session{id: session_id} = session, label, meta) do

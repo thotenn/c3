@@ -17,9 +17,14 @@ defmodule C3.Application do
       {Phoenix.PubSub, name: C3.PubSub},
       C3.Security.BanCache,
       C3.RateLimiter,
+      C3.Idempotency,
+      # Expires silent claims and old idempotency keys; off in test.
+      C3.Config.get(:sweeper) && C3.Sweeper,
       # Start to serve requests, typically the last entry
       C3Web.Endpoint
     ]
+
+    children = Enum.filter(children, & &1)
 
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options

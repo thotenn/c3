@@ -10,14 +10,15 @@ defmodule C3.Events do
 
   alias C3.Events.Event
   alias C3.Repo
-  alias C3.Sessions.{Agent, Session}
+  alias C3.Sessions.Session
 
   @default_limit 100
 
   @doc """
   Appends an event of `type` to the session with the next `seq`. Call inside a transaction.
 
-  Options: `:actor` (an `Agent`), `:payload` (a map).
+  Options: `:actor` (an `Agent`), `:thread` and `:message` (the records the event is about,
+  or their ids), `:payload` (a map).
   """
   def append!(%Session{id: session_id}, type, opts \\ []) do
     {1, [seq]} =
@@ -26,16 +27,19 @@ defmodule C3.Events do
       |> select([s], s.event_seq)
       |> Repo.update_all(inc: [event_seq: 1])
 
-    actor_id =
-      case opts[:actor] do
-        %Agent{id: id} -> id
-        nil -> nil
-      end
-
-    %Event{session_id: session_id, actor_agent_id: actor_id}
+    %Event{
+      session_id: session_id,
+      actor_agent_id: id_of(opts[:actor]),
+      thread_id: id_of(opts[:thread]),
+      message_id: id_of(opts[:message])
+    }
     |> Event.changeset(%{seq: seq, type: type, payload: Keyword.get(opts, :payload, %{})})
     |> Repo.insert!()
   end
+
+  defp id_of(nil), do: nil
+  defp id_of(id) when is_integer(id), do: id
+  defp id_of(%{id: id}), do: id
 
   @doc "When the last event of `type` happened in the session, or `nil`."
   def last_at(%Session{id: session_id}, type) do

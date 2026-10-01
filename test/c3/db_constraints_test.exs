@@ -3,7 +3,7 @@ defmodule C3.DbConstraintsTest do
   The database enforces `schema.md` on its own: rows are inserted raw, bypassing the
   changesets, so every CHECK, foreign key and ON DELETE rule is exercised by SQLite.
   """
-  use C3.DataCase, async: true
+  use C3.DataCase
 
   import C3.Fixtures
 
