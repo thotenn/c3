@@ -7,6 +7,20 @@ generated: 2026-10-02
 
 Newest first.
 
+## 2026-10-02 — refresh after escalating bans, IPv6 subjects and the security docs
+
+**Scope:** the documents the diff `fa64fbd..e99b2ae` invalidated (join security, admin,
+architecture, orientation) · **Anchored to:** `c3@e99b2ae` (`main`)
+**How:** `sk-ctx-update` through sk-context, only the jobs the diff invalidated.
+
+C3-3 F3 (escalating bans, `C3_SECRET_TOLERANCE`, IPv6 by `C3_IPV6_PREFIX`, `ip_full`) and F4
+(`docs/security.md`, *Scaling* in `docs/deploy.md`).
+
+**Known gaps:**
+- `docs/security.md` and `docs/deploy.md` are hand-written and outside the tree; the tree links to
+  them but does not verify them.
+- Everything listed under earlier generations still applies.
+
 ## 2026-10-02 — refresh after splitting `C3.Threads`
 
 **Scope:** `threads-and-requests`, `arch-build`, orientation (`general-context/`) · **Anchored to:**

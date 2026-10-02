@@ -2,161 +2,163 @@
 doc: architecture/01-request-pipeline-and-routing
 repo: c3
 kind: architecture
-anchored_to: fcd0bd9
+anchored_to: e99b2ae
 generated: 2026-10-02
 ---
-# How an HTTP request enters c3 — endpoint, router pipelines, plugs, and the stable error shape
+# Request pipeline and routing
 
-Every HTTP request goes through one plug chain in `lib/c3_web/endpoint.ex:C3Web.Endpoint`. Then one or more named pipelines in `lib/c3_web/router.ex:C3Web.Router` run, and only after that does a controller action run. The pipelines handle the cross-cutting work: they resolve the real client IP, rate-limit, authenticate the agent, replay `Idempotency-Key` retries and guard `/mcp` against DNS rebinding. Every API failure, whether it comes from a plug, a controller or a Phoenix exception, uses one JSON shape: `{"error": {"code", "message", "details"?}}`. Clients depend on that shape staying the same.
+Every HTTP request goes through the same path: the endpoint's plug chain, then one or more router pipelines, then a controller. Each pipeline handles one cross-cutting concern: the client IP, rate limits, agent auth, `Idempotency-Key` replay, and the MCP origin guard. All failures come back in one stable JSON error shape. Most of the routing is ordinary Phoenix. Some parts look like mistakes, but each one is there on purpose, and "fixing" it breaks real clients.
 
 ## How it works
 
-**Endpoint chain** (`lib/c3_web/endpoint.ex:C3Web.Endpoint`), in order:
-1. `socket "/live"` handles the LiveView socket.
-2. `Plug.Static` serves only `lib/c3_web.ex:static_paths`.
-3. In dev only: the code reloader and `Phoenix.Ecto.CheckRepoStatus`.
-4. `Plug.RequestId`, then `Plug.Telemetry`.
-5. `C3Web.Plugs.Parsers`.
-6. `Plug.MethodOverride`, `Plug.Head` and `Plug.Session` (a signed cookie, `_c3_key`).
-7. The router.
+**Endpoint.** `lib/c3_web/endpoint.ex:C3Web.Endpoint` runs the plugs in this order:
+1. `Plug.Static`
+2. In development only, the code reloader plugs
+3. `Plug.RequestId` and `Plug.Telemetry`
+4. `C3Web.Plugs.Parsers`
+5. `Plug.MethodOverride`, `Plug.Head` and `Plug.Session`
+6. `C3Web.Router`
 
-The body is parsed in the endpoint, before any route is matched. That is why the body-size limit depends on the request path and not on the route (see Parsers below).
+The body is parsed before routing starts. That is why the body size limit is chosen by path in `lib/c3_web/plugs/parsers.ex:carries_attachments?` and not per pipeline:
+- **1 MB** by default (`@default_length`).
+- **`C3.Config.attachments_request_max_bytes/0`** on three routes, because they can carry inline attachments:
+  - `POST /v1/threads/:id/messages`
+  - `POST /v1/sessions/:code/threads`
+  - `POST /mcp`, because MCP tool calls can post messages too.
 
-**Body limit.** `lib/c3_web/plugs/parsers.ex:carries_attachments?` checks whether the request is a `POST` to one of these paths:
-- `/v1/threads/:id/messages`
-- `/v1/sessions/:code/threads`
-- `/mcp`
+A body over the limit gets a `413 too_large`, rendered by `lib/c3_web/controllers/error_json.ex:C3Web.ErrorJSON`. Smaller per-message limits are enforced later, outside this mechanism.
 
-If it is, the limit is `C3.Config.attachments_request_max_bytes/0`, because those routes carry attachments inline. Every other request gets `@default_length` (1 MB). A body over the limit is a 413, which `lib/c3_web/controllers/error_json.ex:C3Web.ErrorJSON` renders as `too_large`. The per-message body limit is enforced later, in the contexts, and is not covered here.
-
-**Router pipelines** (`lib/c3_web/router.ex`), in declaration order:
+**Pipelines**, in the order `lib/c3_web/router.ex:C3Web.Router` declares them:
 
 | Pipeline | Plugs, in order | What it enforces |
 |---|---|---|
-| `:browser` | `accepts ["html"]`, `fetch_session`, `fetch_live_flash`, `put_root_layout`, `protect_from_forgery`, `put_secure_browser_headers` | CSRF and secure headers for `/` and `/admin` |
-| `:api` | `accepts ["json"]` | `/healthz` only |
-| `:v1` | `accepts ["json"]`, `RealIp`, `RateLimit :ip` | Applies to every `/v1` route in the first `/v1` scope, including the unauthenticated `POST /v1/sessions` and `/join` |
-| `:agent` | `AgentAuth`, `RateLimit :token`, `Idempotency` | Authenticated agent calls; `POST` retries are replayed |
-| `:agent_no_replay` | `AgentAuth`, `RateLimit :token` | `POST /v1/sessions/:code/rotate-secret` only. **No `Idempotency`, on purpose**: a stored response would keep the new secret in clear in `idempotency_keys` for 24 h, so a retry rotates the secret again |
-| `:feed` | `AgentAuth, activity: false`, `RateLimit :token` | `/events`, `/heartbeat`, `/events/stream` and `/watch`. Polling shows the agent is alive but does not count as session activity |
-| `:sse` | `RealIp`, `RateLimit :ip` | **No `accepts`**: `Accept: text/event-stream` or `text/plain` would get a 406 from `:v1`. Used by `/metrics`, by `[:sse, :feed]` for `/events/stream` and `/watch`, and by `[:sse, :agent]` for `GET /v1/attachments/:id`, which answers with the file's own content type |
-| `:mcp` | `Origin`, `RealIp`, `RateLimit :ip` | **No `accepts`**: a legacy client's `GET /mcp` (`Accept: text/event-stream`) has to reach `MCPController :not_allowed` and get a 405, not a 406 |
-| `:admin` | `AdminEnabled`, `RealIp`, `RateLimit :ip` | Runs after `:browser`. Returns 404 while the admin token is unset |
+| `:browser` | `accepts ["html"]`, session, flash, root layout, `protect_from_forgery`, secure headers | Standard HTML pages: `/` and the admin pages |
+| `:api` | `accepts ["json"]` | Used only by `/healthz` |
+| `:v1` | `accepts ["json"]`, `C3Web.Plugs.RealIp`, `C3Web.Plugs.RateLimit, :ip` | Every JSON `/v1` route: the rate limit per client IP |
+| `:agent` | `C3Web.Plugs.AgentAuth`, `RateLimit, :token`, `C3Web.Plugs.Idempotency` | Requires a Bearer token, applies the rate limit per agent, and replays `Idempotency-Key` |
+| `:agent_no_replay` | `AgentAuth`, `RateLimit, :token` | Like `:agent` but without `Idempotency`. Used only by `rotate-secret` |
+| `:feed` | `AgentAuth, activity: false`, `RateLimit, :token` | Counts as a sign of life from the agent, but not as activity on the session, so a watcher left running does not keep an idle session open |
+| `:sse` | `RealIp`, `RateLimit, :ip` | Like `:v1` but **without `accepts`**. Used for `/metrics`, the event stream, `/watch` and the attachment download |
+| `:mcp` | `C3Web.Plugs.Origin`, `RealIp`, `RateLimit, :ip` | DNS-rebinding guard, then the IP limit. No `accepts` |
+| `:admin` | `C3Web.Plugs.AdminEnabled`, `RealIp`, `RateLimit, :ip` | Returns 404 for everything while the admin token is unset |
 
-`/dev/dashboard` is mounted only when the compile-time `:dev_routes` setting is on.
+Pipelines are combined per scope:
+- `/v1` session create and join use `:v1` only.
+- Authenticated `/v1` routes use `:v1` followed by `:agent`, `:agent_no_replay` or `:feed`.
+- `/v1/sessions/:code/events/stream` and `/watch` use `[:sse, :feed]`.
+- `/v1/attachments/:id` uses `[:sse, :agent]`.
+- `/admin` uses `[:browser, :admin]`.
 
-**Real client IP.** `lib/c3_web/plugs/real_ip.ex:client_ip` writes `conn.assigns.client_ip`.
-- With no real-IP header configured, the client IP is `conn.remote_ip` (the peer).
-- With a header configured, the header is read only when the peer belongs to the trusted-proxy CIDRs.
-- Its comma-separated entries are parsed, entries that don't parse are dropped, and the list is walked **right-to-left**. The first address that is not a trusted proxy wins.
-- If every entry is trusted, it falls back to the leftmost entry, and then to the peer.
+**Client IP.** `lib/c3_web/plugs/real_ip.ex:client_ip` sets `conn.assigns.client_ip`:
+- With no real-IP header configured, it uses the peer address.
+- With a header configured, the header is read only when the peer is in the trusted-proxy list. The comma-separated entries are reversed, and the first one that is not a trusted proxy wins.
+- If every entry is trusted, the left-most entry is used. If the header is empty or invalid, the peer address is used.
 
-Walking from the right means a client cannot spoof its address by prepending entries to the header.
+Because the list is read from the right, a client cannot spoof its address by putting extra entries at the front.
 
-**Rate limit.** `lib/c3_web/plugs/rate_limit.ex:call` uses two keys:
-- `{:ip, client_ip}`.
-- `{:token, current_agent.token_hash}`. This is the token **hash**, not the agent id, so the limit follows the credential.
+**Rate limit.** `lib/c3_web/plugs/rate_limit.ex:limit` calls `lib/c3/rate_limiter.ex:hit`, a fixed-window counter in ETS:
+- The key is `{:ip, CIDR.subject(ip)}`, so IPv6 clients are grouped by network prefix.
+- Or the key is `{:token, current_agent.token_hash}`, so the token hash and not the agent id.
+- Over the limit: `429 rate_limited` with a `retry-after` header and `details.retry_after`.
+- Under `/admin` the 429 is plain text instead of JSON (`reject/2`).
+- Counters are lost on restart, which is acceptable. The `:sweep` handler drops finished windows every minute.
 
-Both keys go to `lib/c3/rate_limiter.ex:hit`, a fixed-window ETS counter keyed by `{key, window_ms, window}`. A sweep every minute deletes finished windows. When the limit is exceeded, the response is a 429 with a `retry-after` header (in seconds, at least 1) and `details.retry_after`. Under `/admin` the 429 is plain text instead (`lib/c3_web/plugs/rate_limit.ex:reject`).
+**Idempotency.** `lib/c3_web/plugs/idempotency.ex:C3Web.Plugs.Idempotency` acts only on `POST` requests that carry an `Idempotency-Key` header:
+- Keys must be 1–100 characters (`@max_key`), otherwise `400`.
+- The request hash (`request_hash/1`) is SHA-256 of `:erlang.term_to_binary({method, request_path, query_string, body_params}, [:deterministic])`. The same JSON with its keys in a different order gives the same hash.
+- Same key, same hash: the stored response is replayed with an `idempotent-replayed: true` header.
+- Same key, different hash: `422 invalid_request`.
+- Unknown key: `lib/c3/idempotency.ex:begin` puts an in-flight mark in ETS. While the first request is still running, a second copy gets `409 conflict`. A mark older than `@stale_ms` (60 s) is treated as stale and taken over.
+- In `register_before_send`, the response is stored only when `status < 500` and the body decodes to a JSON map. The in-flight mark is always cleared.
+- Stored responses are rows of `lib/c3/sessions/idempotency_key.ex:C3.Sessions.IdempotencyKey`, unique on `[:agent_id, :key]` and inserted with `on_conflict: :nothing`.
+- `lib/c3/idempotency.ex:purge` deletes rows older than `@ttl_seconds` (24 h).
 
-**Idempotency.** `lib/c3_web/plugs/idempotency.ex:call` acts only on `POST` requests that carry an `Idempotency-Key` header:
-1. The key is trimmed. It must be 1 to 100 bytes, otherwise the response is 400 `invalid_request`.
-2. `request_hash` is the SHA-256 of `{method, request_path, query_string, body_params}`, encoded with `:erlang.term_to_binary(_, [:deterministic])`. The same JSON with its keys in another order therefore hashes the same.
-3. `lib/c3/idempotency.ex:lookup` looks for a stored response:
-   - Same hash: the stored status and body are replayed, with the `idempotent-replayed: true` header.
-   - Different hash: 422 `invalid_request`.
-   - No stored row: `lib/c3/idempotency.ex:begin` places an in-flight mark in ETS. If the mark already exists, the response is 409 `conflict`. A mark older than `@stale_ms` (60 s) is treated as stale and taken over.
-4. A `register_before_send` callback stores the response only if its status is below 500 and its body decodes to a JSON object (`lib/c3_web/plugs/idempotency.ex:store`). The callback then clears the mark with `lib/c3/idempotency.ex:finish`.
+**Errors.** Every API error has the shape `{"error": {"code", "message", "details"?}}`, built by `lib/c3_web/api_error.ex:body`. Errors come from three places:
+- Plugs call `lib/c3_web/api_error.ex:send_error`, which also halts the request.
+- Controllers return `{:error, …}`, and `lib/c3_web/controllers/v1/fallback_controller.ex:C3Web.V1.FallbackController` maps it to an error response.
+- Errors Phoenix raises itself (no route, a body that does not parse, a crash, 406, 413, 415) are rendered by `lib/c3_web/controllers/error_json.ex:render`, which maps the status to a code through `@codes`. Any unmapped status becomes `internal_error`.
 
-`lib/c3/idempotency.ex:store` inserts with `on_conflict: :nothing` on `[:agent_id, :key]`. `lib/c3/idempotency.ex:purge` deletes rows older than `@ttl_seconds` (24 h).
-
-**Origin guard.** `lib/c3_web/plugs/origin.ex:call` lets a request with no `Origin` header through; agents don't send one. A request whose `Origin` is not in the allowed list gets a 403 with a **JSON-RPC** error body (`code: -32600`), not the `ApiError` shape.
-
-**Errors.** There are three paths into the stable shape built by `lib/c3_web/api_error.ex:body`:
-1. Plugs call `lib/c3_web/api_error.ex:send_error`, which also halts the connection.
-2. Controllers that declare `action_fallback C3Web.V1.FallbackController` return `{:error, …}`, and `lib/c3_web/controllers/v1/fallback_controller.ex:call` maps it to a response.
-3. Phoenix exceptions and unmatched routes on JSON requests are rendered by `lib/c3_web/controllers/error_json.ex:render`. It maps the status to a code through `@codes`, and any status not in the map becomes `internal_error`.
-
-HTML errors are rendered as plain status text (`lib/c3_web/controllers/error_html.ex:render`).
-
-| Code | Status | Typical source |
+| Code | Status | Typical origin |
 |---|---|---|
-| `invalid_request` | 400 / 406 / 415 / 422 | Idempotency key format or reuse, `{:invalid, …}`, changeset errors (details hold the field errors) |
-| `unauthorized` | 401 | Agent auth |
-| `invalid_secret` | 403 | Wrong security number on join; the IP is banned as a result |
-| `ip_banned` | 403 | Fallback; `details.banned_until` |
-| `forbidden` | 403 | `{:forbidden, msg}` |
-| `not_found` | 404 | `:not_found`, `:thread_not_found`, `:attachment_not_found`, no route |
-| `conflict` | 409 | `{:conflict, msg, details}`, Idempotency key in flight |
-| `session_closed` | 410 | `:session_closed` |
-| `too_large` | 413 | Parsers limit, `{:too_large, msg}` |
-| `joins_locked` | 423 | `:joins_locked` |
-| `rate_limited` | 429 | RateLimit; `details.retry_after` |
-| `internal_error` | 500 | Anything unmapped |
+| `invalid_request` | 400 / 422 (and 406 / 415 from `ErrorJSON`) | Bad key, changeset error, `{:invalid, …}`, reused key |
+| `unauthorized` | 401 | `AgentAuth` |
+| `invalid_secret`, `ip_banned`, `forbidden` | 403 | Fallback; `ip_banned` carries `details.banned_until` |
+| `not_found` | 404 | Session, thread or attachment |
+| `conflict` | 409 | Idempotency key in flight, `{:conflict, …}` |
+| `session_closed` | 410 | `AgentAuth`, fallback |
+| `too_large` | 413 | Parsers, `{:too_large, …}` |
+| `joins_locked` | 423 | Fallback |
+| `rate_limited` | 429 | `RateLimit` |
+| `internal_error` | 500 | `ErrorJSON` |
+
+The one exception is `C3Web.Plugs.Origin`. Its 403 is a JSON-RPC error (`code: -32600`), not the API shape, because only MCP clients reach it.
 
 ## The pieces
 
 | Path | Export | Role |
 |---|---|---|
-| `lib/c3_web/endpoint.ex` | `C3Web.Endpoint` | Plug chain before routing; body parsing happens here |
+| `lib/c3_web/endpoint.ex` | `C3Web.Endpoint` | The plug chain; parses the body before routing |
 | `lib/c3_web/router.ex` | `C3Web.Router` | Pipelines and scopes |
-| `lib/c3_web.ex` | `controller`, `router`, `static_paths` | `use C3Web, :controller` gives `formats: [:html, :json]` |
-| `lib/c3_web/plugs/parsers.ex` | `C3Web.Plugs.Parsers` | `Plug.Parsers` with a body limit chosen per path |
-| `lib/c3_web/plugs/real_ip.ex` | `C3Web.Plugs.RealIp` | Sets `assigns.client_ip` |
-| `lib/c3_web/plugs/rate_limit.ex` | `C3Web.Plugs.RateLimit` | `:ip` / `:token` limits |
-| `lib/c3/rate_limiter.ex` | `C3.RateLimiter.hit/3` | ETS fixed-window counters (a GenServer owns the table) |
-| `lib/c3_web/plugs/origin.ex` | `C3Web.Plugs.Origin` | DNS-rebinding guard for `/mcp` |
-| `lib/c3_web/plugs/idempotency.ex` | `C3Web.Plugs.Idempotency` | Replay, reject or store `POST` responses |
-| `lib/c3/idempotency.ex` | `lookup/2`, `begin/2`, `finish/2`, `store/5`, `purge/1` | Stored responses plus the in-flight ETS marks |
-| `lib/c3/sessions/idempotency_key.ex` | `C3.Sessions.IdempotencyKey` | `idempotency_keys` row, unique on `[:agent_id, :key]` |
-| `lib/c3_web/api_error.ex` | `body/3`, `send_error/5` | The stable error shape |
-| `lib/c3_web/controllers/v1/fallback_controller.ex` | `C3Web.V1.FallbackController.call/2` | Maps context `{:error, …}` results to `ApiError` |
-| `lib/c3_web/controllers/error_json.ex` | `C3Web.ErrorJSON.render/2` | Renders Phoenix-raised errors in the stable shape |
-| `lib/c3_web/controllers/error_html.ex` | `C3Web.ErrorHTML.render/2` | Plain status text for HTML requests |
+| `lib/c3_web.ex` | `C3Web` | The `use C3Web, :router` / `:controller` macros |
+| `lib/c3_web/plugs/parsers.ex` | `C3Web.Plugs.Parsers` | Body size limit chosen by path |
+| `lib/c3_web/plugs/real_ip.ex` | `C3Web.Plugs.RealIp` | Sets `client_ip`; trusts the header only from a trusted proxy |
+| `lib/c3_web/plugs/rate_limit.ex` | `C3Web.Plugs.RateLimit` | `:ip` / `:token` limits, 429 |
+| `lib/c3/rate_limiter.ex` | `C3.RateLimiter.hit/3` | Fixed-window ETS counters |
+| `lib/c3_web/plugs/origin.ex` | `C3Web.Plugs.Origin` | MCP `Origin` allowlist |
+| `lib/c3_web/plugs/idempotency.ex` | `C3Web.Plugs.Idempotency` | Replay, conflict and storage of `Idempotency-Key` responses |
+| `lib/c3/idempotency.ex` | `C3.Idempotency` | In-flight ETS mark, DB storage, `purge/1` |
+| `lib/c3/sessions/idempotency_key.ex` | `C3.Sessions.IdempotencyKey` | The stored response row |
+| `lib/c3_web/api_error.ex` | `C3Web.ApiError` | The error shape: `body/3`, `send_error/5` |
+| `lib/c3_web/controllers/v1/fallback_controller.ex` | `C3Web.V1.FallbackController` | Maps a context's `{:error, …}` to an `ApiError` response |
+| `lib/c3_web/controllers/error_json.ex` | `C3Web.ErrorJSON` | Renders errors Phoenix raises in the API shape |
+| `lib/c3_web/controllers/error_html.ex` | `C3Web.ErrorHTML` | HTML error pages, used by `AdminEnabled` |
 
 ## How a feature uses it
 
-Add the route to the scope whose pipeline matches what the route needs: `:agent` for a normal authenticated call, `:feed` for polling, `[:sse, :agent]` for a response that is not JSON. Declare the fallback controller and return context errors as they are:
+To add an authenticated `/v1` endpoint, put the route inside the `pipe_through :agent` scope. The controller then reads `conn.assigns.current_agent` and `current_session`, and returns `{:error, …}` tuples that `FallbackController` already understands:
 
 ```elixir
-# lib/c3_web/router.ex, inside scope "/v1" … pipe_through :agent
-post "/threads/:id/claim", ThreadController, :claim
-
-# controller
-action_fallback C3Web.V1.FallbackController
-def claim(conn, params), do: with({:ok, t} <- ..., do: json(conn, ...))
+scope "/" do
+  pipe_through :agent
+  post "/threads/:id/claim", ThreadController, :claim
+end
 ```
 
-If a context returns an `{:error, …}` tuple that `FallbackController.call/2` has no clause for, Phoenix raises a `FunctionClauseError` and the client gets a 500 `internal_error`. Add the clause there.
+Where the route goes changes what it gets:
+- Outside every agent scope: no auth, and only the IP limit applies.
+- Under `:feed`: the request does not postpone the session's idle close.
+- A new error atom must get a `call/2` clause in `FallbackController`. Without one, the request crashes and the client gets a 500.
 
 ## Rules
 
-1. **Don't add an `accepts` plug to `:sse`, `:mcp` or the attachment-download scope.** SSE clients, `/watch`, legacy MCP `GET` requests and downloads would start getting 406 instead of their stream, their text or their 405.
-2. **Keep `rotate-secret` out of `:agent`.** Under `Idempotency`, the new secret would be stored in clear for 24 h.
-3. **`RealIp` must run before `RateLimit :ip`, and `AgentAuth` before `RateLimit :token` and `Idempotency`.** They read `assigns.client_ip` and `assigns.current_agent`; without those assigns the request crashes with a 500.
-4. **Every API error goes through `C3Web.ApiError`.** Clients match on `error.code`. The only exception is `Origin`'s JSON-RPC body, which the MCP transport requires.
-5. **A new route that carries attachments inline has to be added to `carries_attachments?`.** Otherwise its body is capped at 1 MB and the client gets a 413.
-6. **A new `Idempotency-Key` field has to stay in the request hash.** If the hash stops covering a field, a different request is replayed as if it were the same one.
+1. **Routes that do not answer JSON must not go through `:v1`/`accepts`.** This covers SSE, `/watch`, `/mcp`, `/metrics` and attachment downloads. Clients send `Accept: text/event-stream` or `text/plain`, and `accepts ["json"]` answers those with `406`. For `/mcp`, a legacy client's `GET` must get `405`, not `406`.
+2. **`rotate-secret` stays on `:agent_no_replay`.** Storing its response would keep the new secret in clear in `idempotency_keys` for 24 h. A retry simply rotates again.
+3. **`RealIp` runs before `RateLimit, :ip`.** The IP limit reads `conn.assigns.client_ip`; without it the request crashes.
+4. **`AgentAuth` runs before `RateLimit, :token` and `Idempotency`.** Both read `current_agent`.
+5. **Every API error goes through `ApiError`.** Clients branch on `error.code`. A hand-built error body breaks them silently.
+6. **A new route that accepts inline attachments must be added to `carries_attachments?`.** Otherwise it is cut off at 1 MB with a `413`.
 
 ## Gotchas
 
-- The 409 from an in-flight Idempotency key only works **on a single node**. The marks are in local ETS, so two nodes would both run the request. `on_conflict: :nothing` then keeps the first stored response.
-- A request that crashes before `before_send` leaves its in-flight mark behind. Retries get 409 for up to 60 s, until the mark goes stale.
-- A 5xx is never stored: a retry with the same key actually runs again. A response whose body is not a JSON object is also not stored, and fails silently.
-- `RealIp` and `RateLimit :ip` do nothing for requests that `/mcp` dispatches in-process (`private.c3_mcp`). An MCP tool call counts once per IP, at `/mcp`, and once per token on the inner call.
-- When every forwarded-header entry is a trusted proxy, the leftmost entry is used, and a client can control that entry.
-- Rate-limit counters and in-flight marks are lost on restart. That is intended (`lib/c3/rate_limiter.ex:C3.RateLimiter`).
-- `ErrorJSON` maps 406 and 415 to `invalid_request`, and 410 to `session_closed`, even when Phoenix raised the error for some other reason.
-- `/metrics` uses `:sse` only to skip `accepts`. It has nothing to do with Server-Sent Events.
+- **The body is parsed before the router.** A pipeline cannot raise or lower the size limit. Only the path match in `Parsers` can.
+- **The rate-limit key is `token_hash`, not the agent id.** If the secret is rotated, the agent gets a fresh token and a fresh bucket.
+- **MCP tool calls count against the IP limit once, at `/mcp`.** They are dispatched in-process as `/v1` requests with `private.c3_mcp`. For those requests, `RealIp` keeps the IP that `/mcp` already resolved and `RateLimit, :ip` does nothing, but the `:token` limit still counts.
+- **The in-flight 409 only works on a single node.** The mark lives in this node's ETS. With two nodes, both copies of a request would run. The database's `on_conflict: :nothing` keeps the first stored response, but the side effect still happens twice.
+- **5xx responses are never stored**, so a retry after a server error really runs again. Bodies that are not JSON maps are not stored either.
+- **`Idempotency` ignores non-`POST` requests**, even under `:agent`. A `GET` with the header is not affected.
+- **`Origin` passes any request without an `Origin` header.** Agents never send one. The guard only stops browser pages.
+- **`AgentAuth` does not check IP bans.** A live token still works from a banned IP.
+- **The admin pages return 429 as plain text, not JSON.**
+- **The `ErrorJSON` message is the standard HTTP status phrase**, not a domain message.
 
 ## Who uses it
 
 | Feature | Uses it for |
 |---|---|
-| Sessions (create/join/rotate) | `:v1`, the IP rate limit, `:agent_no_replay`, the `ip_banned` / `invalid_secret` / `joins_locked` codes |
-| Threads and messages | `:agent`, Idempotency, the larger body limit |
-| Event feed / watcher | `:feed`, `:sse` without `accepts` |
-| Attachments | `[:sse, :agent]` download, `too_large` |
-| MCP endpoint | `:mcp`, `Origin`, in-process dispatch skipping the IP limit |
-| Admin UI | `:browser` + `:admin`, plain-text 429 |
-| Metrics / health | `:sse` (`/metrics`), `:api` (`/healthz`) |
+| Sessions (create, join, rotate-secret, close) | The `:v1` IP limit; ban, secret and lock errors through the fallback; replay is skipped for rotate-secret |
+| Threads and messages | `:agent` auth, replay and the larger body limit for attachments |
+| Event feed and watcher | `[:sse, :feed]`: no `accepts`, and the feed does not count as session activity |
+| Attachments | `[:sse, :agent]` for downloads, the larger body limit for uploads |
+| MCP endpoint | `:mcp` pipeline, `Origin`, and in-process dispatch that skips the IP limit |
+| Admin | `AdminEnabled`, the IP limit with plain-text 429 |
+| Metrics | `:sse`, so Prometheus text is not rejected by `accepts` |

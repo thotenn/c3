@@ -2,12 +2,12 @@
 doc: features/sessions-and-agents/02-files
 repo: c3
 kind: feature-files
-anchored_to: fcd0bd9
+anchored_to: e99b2ae
 generated: 2026-10-02
 ---
 # Sessions and Agents — files
 
-The feature has one context module and two schemas in the domain layer, plus one thin controller and its JSON view. What surprises people is that `lib/c3/sessions.ex` does more than its name says. Session close (`close_session!/5`, which runs inside the caller's transaction), the join-failure path that bans IPs and locks joins, the `/inbox` notice cursor (`take_notices/1`) and the throttled liveness writes (`touch_seen/2`, `touch_activity/2`) all live there. The plug, the idle reaper, the admin pages and the MCP tools call into it. No session process exists: `lib/c3/sessions.ex:add_agent!` serializes counters with an atomic `UPDATE … inc` inside a transaction.
+Most of the feature's logic sits in one context module, `lib/c3/sessions.ex`. It owns more than its name suggests. Besides create, join, leave and close, it also holds the join-failure bookkeeping (`invalid_secret`, `unknown_code`, `maybe_lock_joins`), secret rotation, the admin `revoke/1`, the inbox's `take_notices/1`, and the throttled `touch_seen/2` and `touch_activity/2` that every authenticated request calls. People are often surprised that no process exists per session. Instead, every counter (`next_agent_number`, `event_seq`) moves through an atomic `UPDATE … inc` inside the caller's transaction (`lib/c3/sessions.ex:add_agent!`). People are also surprised that `close_session!/5` is a public function that must run inside someone else's `Repo.transaction`. The user close, the admin close and the idle/TTL sweeper all go through it.
 
 **Owned globs:** `lib/c3/sessions.ex`, `lib/c3/sessions/session.ex`, `lib/c3/sessions/agent.ex`, `lib/c3_web/controllers/v1/session_controller.ex`, `lib/c3_web/controllers/v1/session_json.ex`
 
@@ -15,57 +15,53 @@ The feature has one context module and two schemas in the domain layer, plus one
 
 | Path | Export | Kind | Responsibility | Touch when |
 |---|---|---|---|---|
-| `lib/c3/sessions.ex` | `C3.Sessions.create_session/2` | context | Creates the session and `AG1` in one transaction. This is the only place the clear secret and token exist. | Changing what a new session gets (TTL, label rules), or the create response |
-| `lib/c3/sessions.ex` | `insert_session` (private) | context | Retries up to 3 times on a `code` unique collision by rolling back the transaction. It never reuses a transaction after the constraint error. | Changing the code format or length in `lib/c3/credentials.ex` |
-| `lib/c3/sessions.ex` | `C3.Sessions.join_session/3` | context | Checks the IP ban, then the label, then normalizes the code and dispatches to `join_existing`, `unknown_code` or `invalid_secret` | Adding a join error, or changing what a failed join records |
-| `lib/c3/sessions.ex` | `join_existing` (private) | context | Checks in this order: closed, locked, secret. A locked session never verifies the secret, so it does not leak whether the secret was right. | Changing the join precedence |
-| `lib/c3/sessions.ex` | `unknown_code` / `invalid_secret` / `maybe_lock_joins` (private) | context | Handles a failed join. `unknown_code` calls `Credentials.dummy_verify` for timing parity. A bad secret bans the IP and emits `security_join_failed`; enough distinct IPs set `joins_locked_at`. | Tuning lock or ban behaviour. Thresholds come from `lib/c3/config.ex`; ban storage is in [join-security](../join-security/02-files.md). |
-| `lib/c3/sessions.ex` | `C3.Sessions.unlock_joins/1`, `unlock_joins/2` | context | Lifts the join lock. It is idempotent and returns `{:ok, false}` when the session was not locked. `by` is either an agent or `:admin`. | Changing who can unlock, or the unlock event payload |
-| `lib/c3/sessions.ex` | `C3.Sessions.rotate_secret/1` | context | Sets a new secret hash and clears the lock. Existing tokens keep working. Failures from before the rotation stop counting toward the next lock, because `maybe_lock_joins` reads the last `session_secret_rotated` event. | Changing rotation semantics. The event must never carry the number. |
-| `lib/c3/sessions.ex` | `C3.Sessions.leave/1` | context | Sets the agent to `left`, releases its claims and recomputes thread status, all in one transaction | Changing what leaving releases. Coordinate with `lib/c3/threads.ex:release_claims!`. |
-| `lib/c3/sessions.ex` | `C3.Sessions.revoke/1` | context | Admin version of `leave`: ends in `revoked` with `by: "admin"`. Returns `{:error, :not_active}` when the agent is not active. | Changing admin revoke (UI side: [admin-ui](../admin-ui/02-files.md)) |
-| `lib/c3/sessions.ex` | `C3.Sessions.close/1`, `close_session!/5` | context | Terminal close: revokes every active token and emits `session_closed`. `close_session!` must run inside the caller's transaction. Its `where` dynamic is how the idle reaper closes only if the session is still idle. | Adding a `close_reason`, or changing what close revokes. Callers: `lib/c3/sessions/lifecycle.ex`, `lib/c3/admin.ex`. |
-| `lib/c3/sessions.ex` | `C3.Sessions.take_notices/1`, `cancelled_for?` (private) | context | Returns unseen security alerts plus the `request_cancelled` events relevant to this agent, and advances `alerts_seen_seq`. Reading has a side effect: each notice is returned once. | Changing which cancellations an agent hears about (`to`/`label:`/`any` rules). The caller is `lib/c3_web/controllers/v1/inbox_controller.ex`. |
-| `lib/c3/sessions.ex` | `C3.Sessions.touch_seen/2`, `touch_activity/2` | context | Throttled writes to `last_seen_at` and `last_activity_at`. Both use the `last_seen_throttle` setting. | Changing presence or idle-close timing. They are called from `lib/c3_web/plugs/agent_auth.ex` and `lib/c3_web/controllers/v1/event_controller.ex`. |
-| `lib/c3/sessions.ex` | `add_agent!` (private) | context | Takes the next `AG<n>` with an atomic increment, stores only the token hash, truncates `user_agent` to 500 chars, and emits `agent_joined` | Changing agent naming or what is recorded at join |
-| `lib/c3/sessions.ex` | `C3.Sessions.get_agent_by_token/1`, `get_agent_by_token_hash/1` | context | Looks up the agent by token hash and preloads its session. It does **not** filter by status: callers check `active` themselves. | Changing the auth lookup. Callers: `lib/c3_web/plugs/agent_auth.ex`, `lib/c3_web/mcp/tools.ex`. |
-| `lib/c3/sessions.ex` | `C3.Sessions.list_agents/1`, `get_session_by_code/1`, `get_idempotency_key/2` | context | Read helpers. Agents are listed in `number` order. | Adding a query |
+| `lib/c3/sessions.ex` | `C3.Sessions.join_session/3` | context | Checks the ban, then the code, then closed/locked, then the secret. After that it inserts the agent or records the failure. | Changing what a wrong secret, an unknown code or a locked session does, or the order of those checks. A locked session never verifies the secret (`join_existing`), so it does not leak whether the secret was correct. |
+| `lib/c3/sessions.ex` | `C3.Sessions.create_session/2` | context | Creates the session and `AG1` in one transaction. If the code collides, it retries up to 3 times (`insert_session`). | Adding a field to session creation, or changing what the creator gets back. This is the only place the clear secret exists. |
+| `lib/c3/sessions.ex` | `C3.Sessions.add_agent!` (private) | context | Takes the next agent number with `UPDATE … inc`, names the agent `AG<n>`, hashes its token, and emits `agent_joined`. | Changing how agents are numbered or named, or what goes in the join event. |
+| `lib/c3/sessions.ex` | `C3.Sessions.leave/1`, `C3.Sessions.revoke/1` | context | Ends an agent (`left` / `revoked`), releases its claims through `C3.Threads.release_claims!`, and recomputes thread status. | Changing what happens to an agent's claimed requests when it goes. `revoke/1` is the admin's version: it is guarded by `status == :active` and returns `:not_active`. |
+| `lib/c3/sessions.ex` | `C3.Sessions.close/1`, `C3.Sessions.close_session!/5` | context | Sets the session to `closed`, revokes every active token, and emits `session_closed`. It rolls back with `:session_closed` when the session was not open or when the extra `where` fails. | Adding a close reason, or changing what closing does to agents. The function has three callers (user, `lib/c3/admin.ex`, `lib/c3/sessions/lifecycle.ex`), so check all three. |
+| `lib/c3/sessions.ex` | `C3.Sessions.unlock_joins/2`, `C3.Sessions.rotate_secret/1` | context | Lifts the join lock (as an agent or `:admin`). Replaces the secret hash, which also unlocks joins. | Changing how a locked session recovers. Both emit events that `last_reset_at` reads to reset the failure count. |
+| `lib/c3/sessions.ex` | `C3.Sessions.invalid_secret`, `C3.Sessions.maybe_lock_joins` (private) | context | Records the failure, bans the subject past `secret_tolerance`, emits `security_join_failed`, and locks the session at `join_lock_ips` distinct subjects. | Tuning when a session locks. Thresholds and ban lengths live in `C3.Security` and are documented in [join-security](../join-security/). |
+| `lib/c3/sessions.ex` | `C3.Sessions.take_notices/1` | context | Returns the security alerts and relevant `request_cancelled` events after `alerts_seen_seq`, and advances that cursor. | Changing what `/inbox` shows only once. The filter is `cancelled_for?`: the agent's own cancellations are excluded, and a cancellation counts if the request was addressed to `any`, to the agent's label, or to the agent's name. |
+| `lib/c3/sessions.ex` | `C3.Sessions.touch_seen/2`, `C3.Sessions.touch_activity/2` | context | Updates `last_seen_at` / `last_activity_at` at most once per `last_seen_throttle`. | Changing presence, or what postpones the idle close. They are called from `lib/c3_web/plugs/agent_auth.ex`, and from the event stream (`lib/c3_web/controllers/v1/event_controller.ex`). |
+| `lib/c3/sessions.ex` | `C3.Sessions.get_agent_by_token/1`, `C3.Sessions.list_agents/1`, `C3.Sessions.get_session_by_code/1` | context | Lookups. The token is hashed before the lookup and the session is preloaded. | Adding a lookup. `get_session_by_code/1` expects an already-normalized code (`Credentials.normalize_code` runs in `join_session/3`). |
 
 ## Schemas
 
 | Path | Export | Kind | Responsibility | Touch when |
 |---|---|---|---|---|
-| `lib/c3/sessions/session.ex` | `C3.Sessions.Session.changeset/2` | schema | Session row. It holds the counters `next_agent_number`, `next_thread_number` and `event_seq`. `closed_by` must match `AG<n>`, `system` or `admin`. `closed_at` is present if and only if the status is `closed`. | Adding a session column (plus a migration in `priv/repo/migrations`). Adding a `close_reason` value also needs the DB check constraint `sessions_close_reason_check`. |
-| `lib/c3/sessions/agent.ex` | `C3.Sessions.Agent.changeset/2` | schema | Agent row. `name` must equal `"AG#{number}"`, `left_at` is present if and only if the agent is not `active`, and `token_hash` is unique. Rows are never deleted. | Adding an agent status or column |
-| `lib/c3/sessions/agent.ex` | `C3.Sessions.Agent.label_format/0` | constant | `@label_format`: lowercase letters, digits and `-`, 1 to 40 chars. It also validates `label:` targets elsewhere. | Changing which labels are allowed. This affects request addressing too. |
+| `lib/c3/sessions/session.ex` | `C3.Sessions.Session` | schema | The session row and its counters (`next_agent_number`, `next_thread_number`, `event_seq`). `secret_hash` is redacted. | Adding a session column (it also needs a migration and `@fields`), or a new `close_reason` value, which must match the DB check `sessions_close_reason_check`. |
+| `lib/c3/sessions/session.ex` | `C3.Sessions.Session.changeset/2` | schema | `closed_at` must be present exactly when the status is `closed`. `closed_by` must match `AG<n>`, `system` or `admin`. | Allowing a new kind of closer. The regex and `close_session!/5` have to agree. |
+| `lib/c3/sessions/agent.ex` | `C3.Sessions.Agent` | schema | An agent row. Agents are never deleted; `status` is `active`, `left` or `revoked`, and `left_at` is set once the agent is not active. | Adding an agent column or status. |
+| `lib/c3/sessions/agent.ex` | `C3.Sessions.Agent.label_format/0` | schema | The label regex, `^[a-z0-9][a-z0-9-]{0,39}$`. It is shared by join validation and `label:` targets. | Changing which labels are allowed. That also changes which requests can be addressed (see [threads-and-requests](../threads-and-requests/)). |
+| `lib/c3/sessions/agent.ex` | `C3.Sessions.Agent.changeset/2` (`validate_name`) | schema | Enforces `name == "AG#{number}"`. | Changing the naming scheme. It is enforced here and in `add_agent!`. |
 
 ## Controllers
 
 | Path | Export | Kind | Responsibility | Touch when |
 |---|---|---|---|---|
-| `lib/c3_web/controllers/v1/session_controller.ex` | `C3Web.V1.SessionController` (`create`, `join`, `show`, `leave`, `close`, `unlock`, `rotate_secret`) | controller | Thin layer over `C3.Sessions`. Errors go to `C3Web.V1.FallbackController`. `meta` builds the client IP from `conn.assigns.client_ip`. | Adding a session endpoint (route in `lib/c3_web/router.ex`) |
-| `lib/c3_web/controllers/v1/session_controller.ex` | `rotate_secret` | controller | Sets `cache-control: no-store` because the response carries the new secret | Adding another response that contains a credential |
-| `lib/c3_web/controllers/v1/session_json.ex` | `C3Web.V1.SessionJSON` (`created`, `joined`, `show`) | dto | Response shapes. Internal ids never appear: agents are shown as `AGn` and threads as `T<n>`. The token appears only in `created`/`joined`. | Changing the API response. The MCP tool output is separate: see [mcp-server](../mcp-server/02-files.md). |
+| `lib/c3_web/controllers/v1/session_controller.ex` | `C3Web.V1.SessionController` | controller | Handles `/v1/sessions` create/join (unauthenticated) and show/leave/close/unlock/rotate-secret (as `current_agent`). Errors go to `C3Web.V1.FallbackController`. | Adding a session route, or changing a response code. `rotate_secret` sets `cache-control: no-store`. `meta/1` reads `client_ip` from the real-ip plug. |
+| `lib/c3_web/controllers/v1/session_json.ex` | `C3Web.V1.SessionJSON` | dto | Wire shapes. Internal ids never appear: agents are `AGn` and threads `Tn`. The token appears only in `created` / `joined`. | Adding a field to the session, agent or thread summary in `GET /v1/sessions/:code`. |
 
 ## Tests
 
 | Path | Covers |
 |---|---|
-| `test/c3/sessions_test.exs` | Context: create, join and its failures, leave, close, notices |
-| `test/c3_web/controllers/v1/session_controller_test.exs` | HTTP contract of `/v1/sessions` |
-| `test/c3_web/controllers/v1/f8_controller_test.exs` | `rotate-secret` and the other F8 endpoints _(scope beyond that undetermined)_ |
-| `test/c3/db_constraints_test.exs` | DB check and unique constraints behind the schemas |
+| `test/c3/sessions_test.exs` | The context: create, join, failures, lock, leave, close, notices |
+| `test/c3_web/controllers/v1/session_controller_test.exs` | The `/v1/sessions` HTTP contract |
+| `test/c3/security/escalation_test.exs` | Escalating bans triggered by `invalid_secret` |
+| `test/c3/db_constraints_test.exs` | The DB checks behind the `Session` / `Agent` changesets |
+| `test/c3/sessions/lifecycle_test.exs` | Idle and TTL closes through `close_session!/5` |
 
 ## Not owned here
 
 | Path | Owner |
 |---|---|
-| `lib/c3/sessions/lifecycle.ex` | [session-lifecycle](../session-lifecycle/02-files.md) |
-| `lib/c3/sessions/idempotency_key.ex`, `lib/c3_web/plugs/idempotency.ex` | [architecture · request pipeline](../../architecture/01-request-pipeline-and-routing.md) |
-| `lib/c3/security.ex`, `lib/c3/security/` | [join-security](../join-security/02-files.md) |
-| `lib/c3/credentials.ex` | [architecture · auth](../../architecture/03-authentication-and-authorization.md) |
-| `lib/c3_web/plugs/agent_auth.ex` | [architecture · auth](../../architecture/03-authentication-and-authorization.md) |
-| `lib/c3/events.ex`, `lib/c3_web/controllers/v1/event_controller.ex` | [event-feed](../event-feed/02-files.md) |
-| `lib/c3/threads.ex` | [threads-and-requests](../threads-and-requests/02-files.md) |
-| `lib/c3/admin.ex` | [admin-ui](../admin-ui/02-files.md) |
-| `lib/c3_web/mcp/tools.ex` | [mcp-server](../mcp-server/02-files.md) |
+| `lib/c3/sessions/lifecycle.ex` | [session-lifecycle](../session-lifecycle/) |
+| `lib/c3/sessions/idempotency_key.ex` | [threads-and-requests](../threads-and-requests/) _(owner undetermined)_ |
+| `lib/c3/security.ex`, `lib/c3/security/` | [join-security](../join-security/) |
+| `lib/c3_web/plugs/agent_auth.ex` | [join-security](../join-security/) _(owner undetermined)_ |
+| `lib/c3/threads.ex` (`release_claims!`, `refresh_threads!`) | [threads-and-requests](../threads-and-requests/) |
+| `lib/c3/events.ex` | [event-feed](../event-feed/) |
+| `lib/c3/admin.ex`, `lib/c3_web/live/admin/session_live.ex` | [admin-ui](../admin-ui/) |
+| `lib/c3_web/controllers/v1/inbox_controller.ex` | [threads-and-requests](../threads-and-requests/) _(owner undetermined)_ |

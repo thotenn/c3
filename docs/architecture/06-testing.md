@@ -2,84 +2,106 @@
 doc: architecture/06-testing
 repo: c3
 kind: architecture
-anchored_to: fcd0bd9
+anchored_to: e99b2ae
 generated: 2026-10-02
 ---
 # Testing
 
-The suite is plain ExUnit on top of Phoenix's `DataCase`/`ConnCase` templates. Four things make it different from a stock Phoenix app. Database tests run serially against SQLite. Client IPs are randomised per test because bans and rate limits live in global ETS. The plugin's shell scripts run against a real HTTP listener. A parity test drives the REST API and the MCP endpoint through the same scenario and checks that the two give the same results. `make precommit` is the gate both locally and in CI.
+The suite is plain ExUnit. It covers the contexts under `lib/c3/`, the REST and MCP doors under `lib/c3_web/`, and the two shell scripts the plugin ships, `plugin/skills/c3/scripts/c3-watch.sh` and `plugin/skills/c3/scripts/c3-attach.sh`. Its job is to keep the two doors (`/v1` and `/mcp`) telling the same story, and to keep the scripts working against a real server. That is why some of the tests are slower and more global than a typical Phoenix suite.
 
 ## How it works
 
-**Sandbox, and why database tests are not async.** `test/test_helper.exs` puts `C3.Repo` in `:manual` sandbox mode. `test/support/data_case.ex:setup_sandbox` starts an owner with `shared: not tags[:async]`, so a test that is not async shares its connection with every process it spawns. No database test declares `async: true`. On SQLite, concurrent sandboxed transactions contend for the single write lock and time out, so the database suites run one at a time on purpose. Only pure-function suites are async: `test/c3/threads/derivation_test.exs`, `test/c3/credentials_test.exs`, `test/c3/security/cidr_test.exs`, `test/c3/local_time_test.exs` and the two error-view tests. These use `ExUnit.Case`, not `DataCase`. Shared mode is also what lets the Bandit-served requests in the script tests (below) see the test's data.
+`test/test_helper.exs` starts ExUnit and puts the Ecto sandbox in `:manual` mode. It also wipes `C3.Config.attachments_dir()` (`lib/c3/config.ex:attachments_dir`) before each run. Attachment files sit on disk, so a sandbox rollback does not remove them.
 
-**Per-test client IPs.** Bans and per-IP counters are global ETS state, which the sandbox does not roll back. `test/support/conn_case.ex:unique_ip` hands out a fresh address from `198.18.0.0/15` for every `conn`. Helpers build extra clients with `test/support/conn_case.ex:with_ip`, and `test/support/conn_case.ex:ip_string` gives the stored string form. `config/test.exs` raises `rate_limit_ip` to `100_000` so unrelated tests never trip the limit. The rate-limit tests lower it themselves.
+Two case templates set up the sandbox, and both go through `test/support/data_case.ex:setup_sandbox`. It calls `Ecto.Adapters.SQL.Sandbox.start_owner!` with `shared: not tags[:async]`, so a non-async test shares one connection with every process it spawns. That matters for `Task.async` long-poll tests and for the Bandit listener.
 
-**Global config swaps.** Several suites change `Application` env for one test and restore the previous value in `on_exit`. Examples are `test/c3_web/controllers/v1/f8_controller_test.exs` (metrics token, attachments), `test/c3_web/controllers/v1/event_controller_test.exs` and `test/c3_web/plugs/security_config_test.exs`. These suites declare `async: false` explicitly.
+- `test/support/data_case.ex:C3.DataCase` is for context tests.
+- `test/support/conn_case.ex:C3Web.ConnCase` is for HTTP tests. Each test gets a `conn` that already has a fresh `remote_ip` from `unique_ip`.
 
-**Attachments on disk.** Files written by attachments survive sandbox rollbacks. `test/test_helper.exs` runs `File.rm_rf!(C3.Config.attachments_dir())` at startup. In test, that directory is under the ignored `tmp/` (set in `config/test.exs`).
+**Database tests run synchronously on purpose.** With the SQLite sandbox, async tests timed out waiting for the single writer's lock. SQLite allows one writer at a time, the rule `AGENTS.md` also states for row locking. Only tests that never touch the database are `async: true`:
 
-**Plugin scripts against a real server.** `test/c3/watch_script_test.exs` and `test/c3/attach_script_test.exs` run the plugin's shell scripts, such as `plugin/skills/c3/scripts/c3-watch.sh`, through `System.cmd("sh", …)`. They need `sh` and `curl` on the machine. To serve requests, each test binds a free port with `:gen_tcp.listen(0, …)` and starts `{Bandit, plug: C3Web.Endpoint, …}` with `start_supervised!`. The endpoint itself keeps `server: false`. Each test gets its own state dir under `System.tmp_dir!()` through `C3_STATE_DIR`, and the dir is removed `on_exit`. Some watcher tests start the listener late on purpose, to check that the script survives an unreachable server. Both files carry `@moduletag :watcher`.
+- `test/c3/security/cidr_test.exs`
+- `test/c3/credentials_test.exs`
+- `test/c3/local_time_test.exs`
+- `test/c3/threads/derivation_test.exs`
+- `test/c3_web/controllers/error_json_test.exs`
+- `test/c3_web/controllers/error_html_test.exs`
 
-**REST↔MCP parity.** `test/c3_web/mcp/parity_test.exs` runs one scenario twice: once through `/v1`, using the hand-written `@routes` map, and once through `/mcp`, using `test/support/mcp_helpers.ex:tool`. Each run comes from its own IP. Values that differ between runs are replaced with `"<masked>"` by `mask`, using the keys in `@masked` plus integer `id`s. The two masked transcripts must be equal. The `@routes` map is written out by hand so the test does not depend on `C3.MCP.Tools` getting the mapping right.
+**IP state is global.** Bans are cached in a global ETS table (`lib/c3/security/ban_cache.ex`), and the sandbox does not roll ETS back. `test/support/conn_case.ex:unique_ip` hands out addresses from 198.18.0.0/15, derived from `System.unique_integer`, so one test's ban never blocks another. A test that needs several clients builds each one with `with_ip(build_conn(), unique_ip())`. The `fresh_conn` helpers in `test/c3_web/controllers/v1/session_controller_test.exs` and `test/c3/watch_script_test.exs` do exactly this. `ip_string` turns the tuple into the string form C3 stores, for assertions against stored rows.
+
+**Plugin scripts run against a real Bandit.** `test/c3/watch_script_test.exs` and `test/c3/attach_script_test.exs` work the same way:
+
+1. Find a free port by opening `:gen_tcp.listen(0, …)` and closing it.
+2. Start `{Bandit, plug: C3Web.Endpoint, ip: {127, 0, 0, 1}, port: port}` with `start_supervised!`.
+3. Run the real shell script from `plugin/skills/c3/scripts/`, setting `C3_STATE_DIR` to a temporary directory and `C3_WATCH_POLL` to a short value.
+
+Both files carry `@moduletag :watcher` and need `sh` and `curl` on the host.
+
+**REST↔MCP parity.** `test/c3_web/mcp/parity_test.exs` runs one `@scenario` twice: once through `/v1` and once through `/mcp`, each from its own IP. It then compares the two transcripts of `{status, body}`, after `mask` replaces everything in `@masked` with `"<masked>"`:
+
+- codes, secrets and tokens
+- the `*_at` timestamps
+- `ip`, `subject` and `banned_until`
+- integer `id`s
+- any `"C3-…"` string
+
+The REST route for each tool is written out by hand in `@routes`, so the test does not trust `lib/c3_web/mcp/tools.ex` to do the mapping. `learn` carries forward values that later steps refer to: `:code`, `:secret`, AG2's token and the attachment id. `test/support/mcp_helpers.ex` provides `mcp` (a JSON-RPC call), `tool` (a `tools/call`) and `meta` (the protocol-version header).
 
 ## The pieces
 
 | Path | Export | Role |
 |---|---|---|
-| `test/test_helper.exs` | — | Sets manual sandbox mode and wipes the attachments dir. |
-| `test/support/data_case.ex` | `C3.DataCase.setup_sandbox` | Starts the sandbox owner; shared mode when the test is not async. |
-| `test/support/data_case.ex` | `errors_on` | Turns changeset errors into a map of messages. |
-| `test/support/conn_case.ex` | `unique_ip`, `with_ip`, `ip_string` | Gives every conn a unique client IP. |
-| `test/support/mcp_helpers.ex` | `mcp`, `tool`, `meta` | JSON-RPC calls to `/mcp` with the headers and `_meta` a `2026-07-28` client sends. Pass `nil` in `headers` to drop a header. |
-| `test/support/fixtures/c3_fixtures.ex` | `session_fixture`, `agent_fixture`, `thread_fixture`, `request_fixture`, `note_fixture`, `event_fixture`, `ip_ban_fixture`, `join_failure_fixture`, `idempotency_key_fixture`, `message_struct` | Inserts rows directly, bypassing the contexts. |
-| `test/c3_web/mcp/parity_test.exs` | `@routes`, `@masked`, `mask` | Checks REST and MCP give the same results. |
-| `test/c3/watch_script_test.exs` | `free_port`, `serve` | Tests the watcher script against a real Bandit listener. |
-| `test/c3/attach_script_test.exs` | — | Tests the attach script against a real Bandit listener. |
-| `test/c3/db_constraints_test.exs` | — | Database-level constraints. |
+| `test/test_helper.exs` | — | Manual sandbox; wipes the attachments directory each run |
+| `test/support/data_case.ex` | `setup_sandbox`, `errors_on` | Sandbox owner (shared unless the test is async); changeset errors as a map |
+| `test/support/conn_case.ex` | `unique_ip`, `with_ip`, `ip_string` | Gives each test its own client IP, because ban state is global ETS |
+| `test/support/mcp_helpers.ex` | `mcp`, `tool`, `meta` | JSON-RPC and tool calls to `/mcp` |
+| `test/support/fixtures/c3_fixtures.ex` | `session_fixture`, `agent_fixture`, `thread_fixture`, `request_fixture`, `note_fixture`, `message_struct`, `event_fixture`, `join_failure_fixture`, `ip_ban_fixture`, `idempotency_key_fixture` | Insert rows through each schema's changeset; unique fields come from `unique_int` |
+| `test/c3_web/mcp/parity_test.exs` | `@scenario`, `@routes`, `@masked` | One scenario through both doors, compared after masking |
+| `test/c3/watch_script_test.exs` | `@moduletag :watcher` | `c3-watch.sh` against a live Bandit |
+| `test/c3/attach_script_test.exs` | `@moduletag :watcher` | `c3-attach.sh` (and the watcher) against a live Bandit |
+| `test/c3_web/controllers/v1/watch_test.exs` | — | The `/watch` long-poll, using `Task.async` |
 
 ## How a feature uses it
 
-A database or HTTP test uses a case template without `async: true`. Every extra client gets its own IP:
+An HTTP test uses `C3Web.ConnCase` without `async`. Each extra client gets its own IP:
 
 ```elixir
 use C3Web.ConnCase
 
 defp fresh_conn, do: with_ip(build_conn(), unique_ip())
 
-test "…" do
-  created = fresh_conn() |> post(~p"/v1/sessions", %{}) |> json_response(201)
-end
+created = fresh_conn() |> post(~p"/v1/sessions", %{}) |> json_response(201)
 ```
 
-If you skip `unique_ip` and reuse one IP across many requests, a ban or the rate limit set off by one test can block a later one.
+A test that skips `with_ip` for a second client shares the default conn's IP. Any ban or join-failure count it triggers then lands on that IP.
+
+A new MCP tool needs an entry in `@routes` and a step in `@scenario`, or parity never covers it. A new response field that differs between runs needs a place in `@masked`, or the parity test fails on an unmasked diff.
 
 ## Rules
 
-1. Never add `async: true` to a suite that uses `C3.DataCase` or `C3Web.ConnCase`. On SQLite, the sandbox write lock times out intermittently. It also turns off shared mode, so Bandit-served requests in the script tests can no longer see the test's data.
-2. Every new MCP tool or REST route goes into `@routes` and into the parity scenario in `test/c3_web/mcp/parity_test.exs`. Without that, the two doors can drift apart unnoticed.
-3. A value that legitimately differs between two runs (a new token, a timestamp, a code) goes into `@masked`. Without that, the parity test fails on a correct change.
-4. A test that changes `Application` env restores the previous value in `on_exit` and declares `async: false`. Otherwise the change leaks into other tests.
-5. A test that needs a background job calls the job directly. `config/test.exs` sets `sweeper: false` because the sweeper would hit the database outside the sandbox.
+1. Never add `async: true` to a test that touches `C3.Repo`. It brings back the SQLite write-lock timeouts, and they show up as intermittent failures.
+2. Every simulated client gets `unique_ip()`. Reusing an IP leaks bans between tests through the global ETS cache, so failures depend on test order.
+3. Fixtures go through changesets (`test/support/fixtures/c3_fixtures.ex`). Raw inserts skip the validations the code under test relies on.
+4. `make precommit` runs `mix precommit` (`mix.exs:precommit`): `compile --warnings-as-errors`, `deps.unlock --unused`, `format`, `test`. It is pinned to `MIX_ENV=test` through `cli/0:preferred_envs`. A compiler warning fails it.
+5. CI (`.github/workflows/ci.yml`) has two jobs:
+   - The `test` job runs `make precommit`, then `git diff --exit-code`. An unformatted commit, or a stale `mix.lock`, fails CI even though precommit itself passed.
+   - The `docker` job runs `make docker-smoke`.
 
 ## Gotchas
 
-- `make precommit` runs `mix precommit`: `compile --warnings-as-errors`, `deps.unlock --unused`, `format`, `test` (alias in `mix.exs`, run with `MIX_ENV=test`). It formats and unlocks in place. The CI job in `.github/workflows/ci.yml` runs `make precommit` and then `git diff --exit-code`, so an unformatted commit passes locally but fails in CI.
-- CI has a second job, `make docker-smoke`, which builds the image and smoke-tests it. That job is not part of `make precommit`.
-- `make test-watcher` runs only the watch and attach suites. The `:watcher` tag is not excluded by default, so plain `mix test` runs them too and needs `sh` and `curl`.
-- `config/test.exs` sets cheap Argon2 parameters (`t_cost: 1, m_cost: 8`). Timing-sensitive tests do not reflect production cost.
-- The admin pages are on in test (`admin_token` set). The 404 case in `test/c3/admin_test.exs` turns them off itself.
-- The fixtures insert rows directly and skip context validations and events. Use the context functions or the HTTP API when the test depends on events being emitted.
+- The moduledocs of `test/support/data_case.ex` and `test/support/conn_case.ex` are the Phoenix generator's text and suggest `async: true`. Ignore that advice here.
+- `:watcher` is a tag, not an exclusion. The script tests run in a plain `mix test` and in CI, so the host needs `sh` and `curl`. `make test-watcher` runs just those three files (`watch_test`, `watch_script_test`, `attach_script_test`).
+- The free port comes from opening a socket and closing it again, so another process could grab it before Bandit binds it. It is rare, and it fails at `start_supervised!`.
+- Bandit serves requests from its own processes. They see the test's data only because the sandbox is shared (non-async), which is one more reason those tests cannot be async.
+- Attachments written during a run stay on disk until the next run starts. Nothing removes them per test.
+- `make plugin-validate` (`claude plugin validate`) is not part of `precommit` or CI.
 
 ## Who uses it
 
 | Feature | Uses it for |
 |---|---|
-| Sessions / credentials | `test/c3/sessions_test.exs`, `test/c3/sessions/lifecycle_test.exs`, `test/c3_web/controllers/v1/session_controller_test.exs`: per-IP isolation for join failures and locks. |
-| Threads | `test/c3/threads_test.exs`, `test/c3/threads/writes_test.exs`, `test/c3_web/controllers/v1/thread_controller_test.exs`. |
-| Events / watch | `test/c3/events_feed_test.exs`, `test/c3_web/controllers/v1/event_controller_test.exs`, `test/c3_web/controllers/v1/watch_test.exs`. |
-| MCP | `test/c3_web/mcp/protocol_test.exs`, `test/c3_web/mcp/parity_test.exs`. |
-| Plugin | `test/c3/watch_script_test.exs`, `test/c3/attach_script_test.exs`. |
-| Attachments, rotation, metrics | `test/c3/attachments_test.exs`, `test/c3_web/controllers/v1/f8_controller_test.exs`. |
-| Admin | `test/c3/admin_test.exs`, `test/c3_web/live/admin_live_test.exs`. |
-| Security | `test/c3/security_test.exs`, `test/c3_web/plugs/security_config_test.exs`. |
+| Sessions and joins (`lib/c3/sessions/`) | `unique_ip` for ban, escalation and join-lock tests (`test/c3_web/controllers/v1/session_controller_test.exs`, `test/c3/security/escalation_test.exs`) |
+| Threads (`lib/c3/threads/`) | Fixtures and sandbox (`test/c3/threads_test.exs`, `test/c3/threads/writes_test.exs`) |
+| MCP door (`lib/c3_web/mcp/`) | `mcp_helpers` and the parity test |
+| Plugin (`plugin/skills/c3/scripts/`) | Script tests against a live Bandit |
+| Attachments | The directory wipe in `test_helper.exs` (`test/c3/attachments_test.exs`) |

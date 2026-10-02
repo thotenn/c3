@@ -3,69 +3,66 @@ doc: features/admin-ui/00-INDEX
 repo: c3
 kind: feature-index
 tier: B
-anchored_to: fcd0bd9
+anchored_to: e99b2ae
 generated: 2026-10-02
 ---
 # Admin UI
 
-A browser console for the person who runs the C3 server. It lists every session, open or recently closed. For each session it shows the agents, the threads, the messages and the live event log. It also shows the server's counters and the IP addresses currently banned. From the console the operator can close a session, purge a closed one, revoke one agent, finish a thread, let new agents join a locked session again, lift an IP ban, and download an attachment. There are no admin users. Anyone who has the admin token can log in, and if no token is configured the admin pages do not exist.
+A browser console for whoever runs the C3 server. The operator signs in with the admin token and gets a live list of every session with server-wide counters and the IP bans in force. From a session's page they can see its agents, threads, messages and event log as they change. They can also act on it: close the session, revoke an agent, let new agents join again, finish a thread, purge a closed session, lift a ban, and download an attachment.
 
 ## Does this ticket belong here?
 
-**Yes if it mentions:** the admin page or dashboard, the admin login or logout, the admin token, a session list or a session detail page that is stale or not live, the admin killing a session or kicking an agent, unbanning an IP from the UI, purging a session by hand, the admin downloading an attachment, the stats or counters on the front page, "load older events".
-**UI labels:** `Admin`, `Admin token`, `Invalid admin token.`, `Too many attempts. Try again in … s.`, `Sessions`, `IP bans in force`, `Open sessions`, `Active agents`, `Bans in force`, `Attachments`, `Sessions created`, `Sessions closed`, `Failed joins`, `Bans issued`, `Long-polls · …`, `Unban`, `Unlock joins`, `Close session`, `Purge now`, `Revoke`, `Finish thread`, `Load older events`, `Log out`; env var `C3_ADMIN_TOKEN`.
-**Routes:** `/admin`, `/admin/login`, `/admin/logout`, `/admin/sessions/:code`, `/admin/sessions/:code/threads/:number`, `/admin/sessions/:code/attachments/:id`
+**Yes if it mentions:** the admin page, the dashboard, the operator console, admin login/logout, "invalid admin token", too many login attempts, the admin being logged out after the token was rotated, the sessions list or its counters, a session's page not updating live, the event log on the admin page ("load older"), closing/purging a session or revoking an agent "from the admin", unbanning an IP from the UI, downloading an attachment as the admin.
+**UI labels:** `Admin`, `Admin token`, `Sign in`, `Sessions`, `Open sessions`, `Active agents`, `Bans in force`, `Attachments`, `Sessions created`, `Sessions closed`, `Failed joins`, `Bans issued`, `Banned until`, confirmations such as `Close this session for every agent? This cannot be undone.`, `Let new agents join this session again?`, `Delete this session and everything in it now? This cannot be undone.`; env var `C3_ADMIN_TOKEN`.
+**Routes:** `/admin/login`, `/admin/logout`, `/admin`, `/admin/sessions/:code`, `/admin/sessions/:code/threads/:number`, `/admin/sessions/:code/attachments/:id`
 **No — go elsewhere if:**
-- An agent closes, leaves or unlocks through the API or MCP → [`sessions-and-agents`](../sessions-and-agents/00-INDEX.md)
-- Wrong security number, bans being issued, the join lock → [`join-security`](../join-security/00-INDEX.md)
-- Automatic expiry or retention purge → [`session-lifecycle`](../session-lifecycle/00-INDEX.md)
-- How the counter values are computed → [`metrics`](../metrics/00-INDEX.md)
-- An event an agent's watcher receives → [`event-feed`](../event-feed/00-INDEX.md)
+- the admin action works but has the wrong effect (what a close, revoke, or finish does to agents and watchers) → [`session-lifecycle`](../session-lifecycle/00-INDEX.md), [`sessions-and-agents`](../sessions-and-agents/00-INDEX.md), [`threads-and-requests`](../threads-and-requests/00-INDEX.md)
+- why an IP got banned or a session got locked → [`join-security`](../join-security/00-INDEX.md)
+- the counters show wrong numbers → [`metrics`](../metrics/00-INDEX.md)
+- an event is missing or arrives twice → [`event-feed`](../event-feed/00-INDEX.md)
 
 ## Entry points
 
 | Route | Page component | Module root |
 |---|---|---|
-| `GET /admin/login`, `POST /admin/login` | `lib/c3_web/controllers/admin_session_controller.ex:new` / `create`, template `lib/c3_web/controllers/admin_session_html/new.html.heex` | `lib/c3/admin.ex` |
+| `GET /admin/login`, `POST /admin/login` | `lib/c3_web/controllers/admin_session_controller.ex:new`, `:create` (template `lib/c3_web/controllers/admin_session_html/new.html.heex`) | `lib/c3/admin.ex` |
 | `DELETE /admin/logout` | `lib/c3_web/controllers/admin_session_controller.ex:delete` | `lib/c3/admin.ex` |
-| `/admin` | `lib/c3_web/live/admin/sessions_live.ex:C3Web.Admin.SessionsLive` | `lib/c3/admin.ex` |
-| `/admin/sessions/:code` and `/admin/sessions/:code/threads/:number` | `lib/c3_web/live/admin/session_live.ex:C3Web.Admin.SessionLive` (`:show` / `:thread`) | `lib/c3/admin.ex` |
+| `/admin` | `lib/c3_web/live/admin/sessions_live.ex:C3Web.Admin.SessionsLive` | `lib/c3_web/live/admin/` |
+| `/admin/sessions/:code`, `/admin/sessions/:code/threads/:number` | `lib/c3_web/live/admin/session_live.ex:C3Web.Admin.SessionLive` | `lib/c3_web/live/admin/` |
 | `GET /admin/sessions/:code/attachments/:id` | `lib/c3_web/controllers/admin_attachment_controller.ex:show` | `lib/c3/admin.ex` |
 
-Shared badges and formatters (`session_status`, `thread_status`, `agent_status`, `time`, `format_bytes`, `event_summary`) live in `lib/c3_web/live/admin/components.ex`.
+## Traps
 
-## Traps worth knowing first
-
-- **The login cookie stores a fingerprint, not the token.** `lib/c3/admin.ex:fingerprint` is an HMAC of the token. Changing `C3_ADMIN_TOKEN` logs out every browser. `lib/c3/admin.ex:valid_login?` also expires a login after `admin_session_ttl`, and it rejects a login time that is in the future.
-- **Login has two rate limits.** `lib/c3_web/controllers/admin_session_controller.ex:@login_limit` allows 10 attempts per minute per IP, and the per-IP limit of the whole `/admin` scope applies on top of that. The submitted token is trimmed before it is compared.
-- **Every admin action calls the domain function an agent would trigger**, so each one leaves the same events as its automatic version: `lib/c3/admin.ex:close_session` (reason `admin`), `lib/c3/admin.ex:revoke_agent`, `lib/c3/admin.ex:unlock_joins`, `lib/c3/admin.ex:finish_thread`. Do not add admin-only side paths to these.
-- **Two actions produce no session event.** `lib/c3/admin.ex:unban` and `lib/c3/admin.ex:purge_session` only broadcast `{:c3_admin, …}`. An unban is per IP, and a purged session has nowhere left to hold an event. If you add another action of this kind, both LiveViews must handle its message: see `handle_info({:c3_admin, …})` in `lib/c3_web/live/admin/session_live.ex:handle_info` and `lib/c3_web/live/admin/sessions_live.ex:handle_info`.
-- **Live updates are debounced, not one query per event.** `lib/c3_web/live/admin/sessions_live.ex:@debounce_ms` (1 s) marks the whole page stale. `lib/c3_web/live/admin/session_live.ex` appends events to the log and decides what to reload from the event type, using `@agent_types` and `@thread_types`. A new event type that changes agents or threads must be added to those lists, or the page goes stale. Both pages also reload every `@tick_ms` (30 s), for values that change without an event (`last_seen_at`, ban expiries).
-- **The session list orders by `status` descending, then by last activity** (`lib/c3/admin.ex:list_sessions`). The status sort uses the raw stored value. Its open/closed counts use SQL `CASE` fragments; keep them portable to Postgres.
-- **A session code in a URL is normalized like a join code** (`lib/c3/admin.ex:get_session`). If it does not normalize, or the attachment is in another session, the attachment download returns a plain `404 Not found` (`lib/c3_web/controllers/admin_attachment_controller.ex:show`).
+- **Without `C3_ADMIN_TOKEN`, every `/admin` route is a 404**, and that includes the login page (`lib/c3/admin.ex:enabled?`). A ticket saying "/admin is not found" is usually a configuration problem, not a bug.
+- **The login cookie holds a fingerprint, not the token** (`lib/c3/admin.ex:fingerprint`): changing the token logs out every admin. A login also expires after `admin_session_ttl` (`lib/c3/admin.ex:valid_login?`).
+- **The login is rate limited twice**: `@login_limit` tries per minute per IP (`lib/c3_web/controllers/admin_session_controller.ex:create`, answers 429 with `retry-after`), on top of the per-IP limit on every `/admin` route. A wrong token gets a 401.
+- **Every admin action reuses the domain function behind its automatic twin** (`lib/c3/admin.ex:close_session`, `:revoke_agent`, `:finish_thread`, `:unlock_joins`, `:purge_session`). Change what an action *does* there, not in the LiveView. `unban` and `purge_session` leave no session event behind, so they announce on the admin topic instead (`{:c3_admin, {:unbanned, ip}}`, `{:c3_admin, {:purged, id}}`).
+- **Live updates are debounced, not one query per event.** `SessionsLive` only marks itself stale and reloads after `@debounce_ms` 1 000 ms. `SessionLive` streams the events themselves, and their types (`@agent_types`, `@thread_types`) decide which panels reload after `@debounce_ms` 300 ms. If a panel stays stale after a new event type, add the type to those lists. Both pages also reload on a 30 s `@tick_ms`, for `last_seen_at` and `last_activity_at`, which change without an event.
+- **The session page subscribes before its first read** (`lib/c3_web/live/admin/session_live.ex:mount`), the same pattern the watcher uses. Reversing the order loses events.
+- If the open session is purged, its page redirects to `/admin` (`lib/c3_web/live/admin/session_live.ex:handle_info`).
+- The attachment download sends the same headers an agent gets, through `C3Web.V1.AttachmentController.send_attachment/2`. A missing session or attachment is a plain-text 404 (`lib/c3_web/controllers/admin_attachment_controller.ex:show`).
 
 ## What this feature does NOT own
 
 | Belongs to | Not here |
 |---|---|
-| [`sessions-and-agents`](../sessions-and-agents/00-INDEX.md) | What closing a session or revoking an agent actually does (token revocation, `stop` to watchers) |
-| [`threads-and-requests`](../threads-and-requests/00-INDEX.md) | Thread state derivation and what "finish" cancels |
-| [`join-security`](../join-security/00-INDEX.md) | How bans and join locks are created; the data behind `Unban` / `Unlock joins` |
-| [`session-lifecycle`](../session-lifecycle/00-INDEX.md) | Retention and the purge itself (`Purge now` only triggers it) |
-| [`attachments`](../attachments/00-INDEX.md) | Attachment storage and the download headers (reused via `send_attachment`) |
-| [`metrics`](../metrics/00-INDEX.md) | The counters and gauges shown on `/admin` |
-| [`event-feed`](../event-feed/00-INDEX.md) | Event types, `seq`, and the `admin` PubSub topic announcements |
-| [`health-and-home`](../health-and-home/00-INDEX.md) | The public home page |
-
-The auth plug, `C3Web.AdminAuth`, and the `AdminEnabled` plug are outside this feature's scope. This document does not cover them. Their behaviour is _(undetermined)_ here.
+| [`session-lifecycle`](../session-lifecycle/00-INDEX.md) | closing, retention and purge semantics (`C3.Sessions.Lifecycle`) |
+| [`sessions-and-agents`](../sessions-and-agents/00-INDEX.md) | revoke and unlock-joins behaviour |
+| [`threads-and-requests`](../threads-and-requests/00-INDEX.md) | finishing a thread and its derived state |
+| [`join-security`](../join-security/00-INDEX.md) | bans, their reasons and durations, `C3.Security.unban/1` |
+| [`event-feed`](../event-feed/00-INDEX.md) | the event log, `{:c3_events, id, seq}` announcements, `list_after` and `list_recent` |
+| [`metrics`](../metrics/00-INDEX.md) | the values on the front page counters |
+| [`attachments`](../attachments/00-INDEX.md) | storing and serving attachment bytes |
+| Architecture: authentication | `C3Web.AdminAuth` and `C3Web.Plugs.AdminEnabled`: the plug and on_mount guard themselves |
 
 ## Documents
 
 | File | Answers |
 |---|---|
-| [`01-flows.md`](01-flows.md) | how a login, an action, or an incoming event reaches the screen |
+| [`01-flows.md`](01-flows.md) | how a login, an admin action and a live update travel from the browser to the database and back |
 | [`02-files.md`](02-files.md) | which file and which symbol to touch |
 
 ## Related
 
-- Features: [`sessions-and-agents`](../sessions-and-agents/00-INDEX.md), [`join-security`](../join-security/00-INDEX.md), [`session-lifecycle`](../session-lifecycle/00-INDEX.md), [`metrics`](../metrics/00-INDEX.md), [`event-feed`](../event-feed/00-INDEX.md), [`attachments`](../attachments/00-INDEX.md)
+- Architecture: [`03-authentication-and-authorization.md`](../../architecture/03-authentication-and-authorization.md), [`01-request-pipeline-and-routing.md`](../../architecture/01-request-pipeline-and-routing.md), [`05-configuration-and-environments.md`](../../architecture/05-configuration-and-environments.md)
+- Features: [`session-lifecycle`](../session-lifecycle/00-INDEX.md), [`join-security`](../join-security/00-INDEX.md), [`event-feed`](../event-feed/00-INDEX.md), [`metrics`](../metrics/00-INDEX.md)

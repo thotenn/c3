@@ -2,7 +2,7 @@
 doc: 00-INDEX
 repo: c3
 kind: folder-index
-anchored_to: fa64fbd
+anchored_to: e99b2ae
 generated: 2026-10-02
 origin: generated
 ---
@@ -35,5 +35,5 @@ facts that decide how this codebase is read — the ones no file listing implies
 - **Source roots:** `lib`, `plugin`, .ex / .heex / .sh. 82 files, every one owned
   by exactly one document — which is what the coverage gate proves before any of this promotes.
 - **Surfaces:** 11 features — 3 at tier A, 6 at tier B, 2 at tier C.
-- **Anchored to:** `fa64fbd` — see `_manifest.toml` for the branch, and `history.md`
+- **Anchored to:** `e99b2ae` — see `_manifest.toml` for the branch, and `history.md`
   for this tree's Known gaps.

@@ -2,7 +2,7 @@
 doc: general-context/00-INDEX
 repo: c3
 kind: folder-index
-anchored_to: fa64fbd
+anchored_to: e99b2ae
 generated: 2026-10-02
 ---
 # General context

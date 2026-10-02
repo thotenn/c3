@@ -2,200 +2,159 @@
 doc: general-context/05-glossary
 repo: c3
 kind: glossary
-anchored_to: fa64fbd
+anchored_to: e99b2ae
 generated: 2026-10-02
 ---
 # Glossary — c3 domain words
 
-The words used in c3's sessions, threads, the event feed and join security, mapped to the identifiers that implement them. Mechanisms are explained in the architecture documents and feature indexes linked below. This file only translates between a term and its code name.
+These are the words of the c3 coordination model: sessions, agents, threads, requests, the event log and join security. This repo has no shared glossary, so every term is defined here.
 
-## agent (AGn)
+## Agent (AGn)
 
-One participant in one session. C3 assigns its name as `AG<number>`, numbered per session from `next_agent_number`. The agent that creates the session is `AG1`. An agent row is never deleted on its own: when an agent leaves, its `status` changes and the row stays. Appears in the code as `lib/c3/sessions/agent.ex:C3.Sessions.Agent` (`status`: `:active | :left | :revoked`) · `lib/c3/sessions/session.ex:next_agent_number`. See [`../features/sessions-and-agents/00-INDEX.md`](../features/sessions-and-agents/00-INDEX.md).
+A participant in a session, usually one Claude Code instance. Each agent gets a number, a name `AG<n>` and its own token. The agent that creates the session is `AG1`. In the code: `lib/c3/sessions/agent.ex:C3.Sessions.Agent`. Its `status` is `:active`, `:left` or `:revoked`. See [`../features/sessions-and-agents/00-INDEX.md`](../features/sessions-and-agents/00-INDEX.md).
 
-**Not to be confused with** label, which is a free name the agent picks for itself. Requests can be addressed to a label, but the label is not the agent's identity.
+**Not to be confused with** the admin. The admin is a human in the admin UI and has no `AGn`. When the admin acts, `closed_by` is recorded as `"admin"` (`lib/c3/sessions.ex:close_session!`).
 
 ## alerts_seen_seq
 
-A per-agent cursor into the event log. It marks the point up to which security alerts and `request.cancelled` notices have already been shown to that agent through `/inbox`. `lib/c3/sessions.ex:take_notices` reads every event with `seq > alerts_seen_seq`, then moves the cursor forward. Reading `/inbox` therefore consumes those notices: each one is shown once. Appears in the code as `lib/c3/sessions/agent.ex:alerts_seen_seq` · `lib/c3_web/controllers/v1/inbox_controller.ex:show`.
+A per-agent cursor in the event log. It makes `/inbox` show each security alert and each relevant `request.cancelled` only once. `lib/c3/sessions.ex:take_notices` reads the events with `seq > alerts_seen_seq` and then moves the cursor forward. Field: `lib/c3/sessions/agent.ex:alerts_seen_seq`.
 
-**Not to be confused with** the watcher's `cursor`, which the client keeps and the server never stores. Polling `/watch` or `/events` does not mark anything as seen.
-
-## answered
-
-A thread status. It means no request in the thread is `open` or `claimed`: all of them are `done` or `cancelled`. It is derived from the requests, not set by any action. Appears in the code as `lib/c3/threads/derivation.ex:derive`.
-
-**Not to be confused with** finished, which is an explicit act of the agent that opened the thread. A new request moves an `answered` thread back to `pending`. A `finished` thread stays finished until it is reopened.
+**Not to be confused with** the watcher's `cursor`. The watcher's cursor lives on the client and is sent back as `after`. `alerts_seen_seq` is stored on the server, and reading `/inbox` moves it forward. Reading `/inbox` therefore uses up those notices.
 
 ## any
 
-A request target meaning "whoever takes it first". In the watcher (`lib/c3/watch.ex:C3.Watch`) and in the `/inbox` cancellation notices (`lib/c3/sessions.ex:take_notices`), a request to `any` concerns every agent except its author. Appears in the code as `lib/c3/threads/message.ex:to_target` (`:any`) · `lib/c3/threads/targets.ex:resolve` (a `nil` target resolves to `"any"`). See [`../features/threads-and-requests/00-INDEX.md`](../features/threads-and-requests/00-INDEX.md).
+A request target that means "whoever takes it". Code: `lib/c3/threads/targets.ex:resolve`, which maps a `nil` target to `"any"`, and `to_target: :any` in `lib/c3/threads/message.ex:C3.Threads.Message`. A request to `any` never reaches its own author, neither in the watcher (`lib/c3/watch.ex:C3.Watch`) nor in cancellation notices (`lib/c3/sessions.ex:take_notices`).
 
-## awaiting
+## Awaiting
 
-The deduplicated list of targets of a thread's `open` requests, in request order. It is computed, not stored. A thread can be `pending` and still have `claimed` requests: those are listed in `processing_by`. Appears in the code as `lib/c3/threads/derivation.ex:derive` · `lib/c3/threads/queries.ex:filter_awaiting` (the `awaiting: me` filter of the thread list).
+The derived list of targets that still have an `open` request in a thread. Computed in `lib/c3/threads/derivation.ex:derive`. Used as a list filter in `lib/c3/threads/queries.ex:filter_awaiting`. A thread can be awaiting someone and also have claimed requests in progress, which are listed in `processing_by`.
 
-## ban
+**Not to be confused with** the inbox. `awaiting` belongs to a thread. The inbox belongs to one agent and also includes the requests that agent has claimed.
 
-An IP-level block, recorded after repeated failed joins. It lasts until the next local midnight (`C3_TZ`) and never applies to an IP in the allowlist. A ban only blocks `create` and `join`: an agent already inside the session keeps working from a banned IP with its token. Appears in the code as `lib/c3/security.ex:ban` · `lib/c3/security/ip_ban.ex` · `lib/c3/security/ban_cache.ex:banned_until`. See [`../features/join-security/00-INDEX.md`](../features/join-security/00-INDEX.md).
+## Ban
 
-**Not to be confused with** joins_locked, which applies to one session for every IP, and stays until someone unlocks it or rotates the secret.
+A block on an IP for `create` and `join` only, which lasts until `banned_until`. In the code: `lib/c3/security/ip_ban.ex:C3.Security.IpBan`, with `reason` set to `:invalid_secret`, `:unknown_code` or `:admin`. The table is the source of truth, and active bans are copied into ETS by `lib/c3/security/ban_cache.ex`. A live token keeps working from a banned IP (`lib/c3_web/plugs/agent_auth.ex:C3Web.Plugs.AgentAuth`). See [`../features/join-security/00-INDEX.md`](../features/join-security/00-INDEX.md).
 
-## claim
+**Not to be confused with** `joins_locked`. A ban applies to one IP across all sessions. A join lock applies to one session for every IP.
 
-An agent marks one or more `open` requests as its own (`open → claimed`). It is a conditional `UPDATE … WHERE request_state = 'open'`, so when two agents race for the same request, exactly one wins. A claim goes back to `open` when:
-- the agent leaves or is revoked: `lib/c3/threads.ex:release_claims!`
-- the agent has not been seen for `claim_ttl`: `lib/c3/threads.ex:expire_claims` emits `request.claim_expired`.
+## Claim
 
-Appears in the code as `lib/c3/threads.ex:claim` · `lib/c3/threads/guards.ex:claimable_request!`.
-
-**Not to be confused with** answering. A claim only reserves the request; a `response` is what resolves it to `done`.
+An agent takes an open request so that nobody else takes it: `request_state` goes from `:open` to `:claimed`. Done by `lib/c3/threads.ex:claim` and checked by `lib/c3/threads/guards.ex:claimable_request!`. A claim goes back to `open` in three cases:
+- the agent leaves or is revoked (`lib/c3/threads.ex:release_claims!`);
+- the agent has not been seen for `claim_ttl` (`lib/c3/threads.ex:expire_claims`, which emits `request.claim_expired`).
 
 ## closing_soon
 
-A warning event, `session.closing_soon`. It is emitted `session_closing_soon` seconds before the session closes, whether the close is coming from idleness or from max TTL. It is emitted again only if activity moved the idle close later in the meantime. Appears in the code as `lib/c3/sessions/lifecycle.ex:warn_closing` · `lib/c3/events/event.ex:session_closing_soon`. See [`../features/session-lifecycle/00-INDEX.md`](../features/session-lifecycle/00-INDEX.md).
+A warning event, `session.closing_soon`. It is emitted `session_closing_soon` seconds before an idle close or a max-TTL close, by `lib/c3/sessions/lifecycle.ex:warn_closing`. The watcher prints it as a line of kind `closing_soon`. See [`../features/session-lifecycle/00-INDEX.md`](../features/session-lifecycle/00-INDEX.md).
 
-## close
+## Code (session code)
 
-Ends the whole session for everyone, and cannot be undone:
-- the session's `status` becomes `closed`;
-- every active token is revoked;
-- every route of the session answers `410` from then on.
+The public identifier of a session, in the form `C3-XXXX-XXXX` (40 random bits, Crockford base32). It is stored in clear. In the code: `lib/c3/credentials.ex:generate_code` and `lib/c3/credentials.ex:normalize_code`.
 
-`close_reason` is one of `manual`, `idle`, `max_ttl` or `admin`. `closed_by` is the closing agent's name, `"admin"`, or `"system"` when the sweeper closed it. Appears in the code as `lib/c3/sessions.ex:close` · `lib/c3/sessions.ex:close_session!` · `lib/c3/sessions/session.ex:close_reason`.
+**Not to be confused with** the secret. The code is shared openly. The secret is what proves the right to join.
 
-**Not to be confused with** leave and revoke, which each affect one agent only. Note that a close sets the agents' `status` to `revoked`, so after a close the agent `status` alone does not tell you why an agent was revoked.
+## Cursor
 
-## code
+The last event `seq` a client has consumed. The client sends it back as `after` on its next call. `/watch` returns `cursor <n>` as its first line, and that cursor also skips past events that were not relevant to the agent (`lib/c3_web/controllers/v1/event_controller.ex:watch`). The SSE stream uses `Last-Event-ID` instead (`lib/c3_web/controllers/v1/event_controller.ex:stream`).
 
-The public identifier of a session, in the form `C3-XXXX-XXXX`: 40 random bits in Crockford base32, stored in clear. It appears in URLs (`/sessions/:code/...`). Appears in the code as `lib/c3/credentials.ex:generate_code` · `lib/c3/credentials.ex:normalize_code`.
+## Event / seq
 
-**Not to be confused with** secret, which is the credential needed to join. Knowing the code alone does not let anyone join.
+One entry of a session's append-only log. Its types are listed in `lib/c3/events/event.ex:C3.Events.Event`. `seq` grows by one per session with no gaps, and is assigned by `lib/c3/events.ex:append!`. See [`../features/event-feed/00-INDEX.md`](../features/event-feed/00-INDEX.md).
 
-## cursor
+**Not to be confused with** a message. Messages are the content of a thread. Events are the notifications about what happened, including messages being posted.
 
-The `seq` of the last event a client has consumed. The client sends it back as `?after=`. `/events` returns it as `last_seq`. `/watch` returns it as a leading `cursor <seq>` line, and moves it past events that do not concern the caller. The watcher script stores it per saved key. Appears in the code as `lib/c3_web/controllers/v1/event_controller.ex:watch` · `plugin/skills/c3/scripts/c3-watch.sh:cursor_of`. See [`../features/event-feed/00-INDEX.md`](../features/event-feed/00-INDEX.md).
+## Events feed vs /watch vs /inbox
 
-## event
+These are three ways to read what happened, and each returns something different:
+- `GET /sessions/:code/events` (`lib/c3_web/controllers/v1/event_controller.ex:index`) returns raw JSON events after a cursor, for any agent in the session. It can long-poll.
+- `GET /sessions/:code/watch` (`lib/c3_web/controllers/v1/event_controller.ex:watch`) returns plain-text lines that concern only the calling agent, built by `lib/c3/watch.ex:line`. It is meant for the curl-only watcher script `plugin/skills/c3/scripts/c3-watch.sh`.
+- `GET /inbox` (`lib/c3_web/controllers/v1/inbox_controller.ex`) returns the current work state: open requests addressed to the agent and the requests it has claimed (`lib/c3/threads/queries.ex:inbox`). It also returns the once-only notices described under `alerts_seen_seq`.
 
-One entry in a session's append-only log, for example `thread.opened`, `request.claimed` or `session.closed`. The full list of types is `lib/c3/events/event.ex:@types`. Events are written in the same transaction as the change they record. Appears in the code as `lib/c3/events/event.ex:C3.Events.Event` · `lib/c3/events.ex:append!`. Fan-out is explained in [`../architecture/04-processes-and-background-work.md`](../architecture/04-processes-and-background-work.md).
+The feed and `/heartbeat` are mounted with `activity: false`. They count as presence, not as session activity. See [`../features/watcher-and-plugin/00-INDEX.md`](../features/watcher-and-plugin/00-INDEX.md).
 
-## events feed vs /watch vs /inbox
+## Inbox
 
-Three ways to read what happened. None of them counts as session activity, with one exception noted below.
-
-| Endpoint | Returns | State it changes |
-|---|---|---|
-| `GET /sessions/:code/events` (and `/events/stream`, SSE) | Every event, as JSON | None |
-| `GET /sessions/:code/watch` | Only the events that concern the caller, one line each, `text/plain` | None |
-| `GET /inbox` | Open and claimed requests, plus cancellation and security notices not yet seen | Moves `alerts_seen_seq` forward |
-
-- `/watch` decides relevance in `lib/c3/watch.ex:line`, so the shell watcher never has to parse JSON. It holds the request until something relevant arrives.
-- The events feed and `/heartbeat` are routed with `activity: false` (`lib/c3_web/plugs/agent_auth.ex:C3Web.Plugs.AgentAuth`). `/inbox` is not, so reading it does count as activity on the session.
-
-## finished
-
-A thread status, set explicitly by the agent that opened the thread. Only that agent can undo it, by reopening the thread. The finish fails while requests are still pending, unless forced: forcing cancels them. It takes precedence over every other rule in `lib/c3/threads/derivation.ex:derive`. Appears in the code as `lib/c3/threads/thread.ex:finished_at`.
-
-**Not to be confused with** answered (see that entry).
+What one agent has to act on. See *Events feed vs /watch vs /inbox*.
 
 ## joins_locked
 
-A per-session lock that refuses every join, from any IP. It is set when wrong secrets for that session come from too many distinct IPs, and emits `session.joins_locked`. A join attempt while locked is recorded as `:joins_locked` but never leads to a ban. The lock is lifted by an unlock or by rotating the secret. Appears in the code as `lib/c3/sessions/session.ex:joins_locked_at` · `lib/c3/sessions.ex:join_session` · `lib/c3/security/join_failure.ex` (reason `:joins_locked`). See [`../features/join-security/00-INDEX.md`](../features/join-security/00-INDEX.md).
+A session state in which new joins are refused for everyone. It is set in `joins_locked_at` (`lib/c3/sessions/session.ex:C3.Sessions.Session`) after repeated wrong secrets from several IPs, and emits `session.joins_locked`. A join attempt in this state is recorded as `:joins_locked` but never banned (`lib/c3/sessions.ex:join_session`). It is cleared by `lib/c3/sessions.ex:unlock_joins` or by `lib/c3/sessions.ex:rotate_secret`. Agents that are already in the session keep working.
 
-## label
+## Label
 
-An optional free name an agent gives itself. It must match `^[a-z0-9][a-z0-9-]{0,39}$`. Requests can be addressed to `label:<x>`. Appears in the code as `lib/c3/sessions/agent.ex:@label_format` · `lib/c3/threads/message.ex:to_label`.
-
-**Not to be confused with** the session's own `label` (`lib/c3/sessions/session.ex:label`), which is only a display name for the session.
+An optional free tag on an agent. A request addressed to `label:<x>` reaches every agent with that label. In the code: `lib/c3/threads/targets.ex:C3.Threads.Targets` (`to_target: :label` with `to_label`) and `lib/c3/threads/queries.ex:addressed_to`. A session also has its own optional `label`, which is unrelated to agent labels.
 
 ## last_seen_at vs last_activity_at
 
-Two timestamps that look alike and do different jobs:
+These two timestamps look alike but control different timeouts:
+- `last_seen_at` (`lib/c3/sessions/agent.ex:last_seen_at`) is agent presence. Any authenticated call updates it through `lib/c3/sessions.ex:touch_seen`. It decides whether that agent's claims expire.
+- `last_activity_at` (`lib/c3/sessions/session.ex:last_activity_at`) belongs to the session and postpones the idle close. It is updated through `lib/c3/sessions.ex:touch_activity`, but not by the event feed, `/watch` or `/heartbeat` (`lib/c3_web/plugs/agent_auth.ex:C3Web.Plugs.AgentAuth`).
 
-| Field | Belongs to | Purpose | Updated by |
-|---|---|---|---|
-| `last_seen_at` | Agent | Presence: keeps the agent's claims from expiring (`claim_ttl`) | Every authenticated request, including the event feed and `/heartbeat` |
-| `last_activity_at` | Session | Keeps the session open: pushes back the idle close (`session_idle_ttl`) | Authenticated requests except the event feed and `/heartbeat` |
+The trap: a running watcher keeps the agent's claims alive, but it does not keep the session open. Both writes are throttled by `:last_seen_throttle` (`lib/c3/config.ex:last_seen_throttle`).
 
-- Code: `lib/c3/sessions.ex:touch_seen` updates `last_seen_at`; `lib/c3/sessions.ex:touch_activity` updates `last_activity_at`.
-- Both writes are throttled by `last_seen_throttle`, so the stored value can be up to 60 seconds behind.
-- The asymmetry is deliberate: a forgotten watcher keeps its agent "present" but does not keep the session alive. See [`../architecture/05-configuration-and-environments.md`](../architecture/05-configuration-and-environments.md).
+## Leave vs revoke vs close
 
-## leave vs revoke vs close
+These are three different ways to end participation:
+- **Leave** is the agent's own action (`lib/c3/sessions.ex:leave`). Its status becomes `:left`, its claims are released and `agent.left` is emitted. Calls with its token then get `401`.
+- **Revoke** is the admin's action (`lib/c3/sessions.ex:revoke`). It has the same effect, but the status becomes `:revoked` and the event is `agent.revoked` with `by: "admin"`.
+- **Close** ends the whole session (`lib/c3/sessions.ex:close` → `lib/c3/sessions.ex:close_session!`). Every token is revoked and every route of the session returns `410`. `close_reason` is `:manual`, `:idle`, `:max_ttl` or `:admin`.
 
-| Action | Who does it | Agent ends as | Claims | Event |
-|---|---|---|---|---|
-| leave | The agent itself | `left` | Back to `open` | `agent.left` |
-| revoke | The admin | `revoked` | Back to `open` | `agent.revoked` (`by: "admin"`) |
-| close | Any agent, the admin, or the sweeper | Every active agent ends `revoked` | Not released one by one | `session.closed` |
+## Message (Tn.m)
 
-Code: `lib/c3/sessions.ex:leave` · `lib/c3/sessions.ex:revoke` · `lib/c3/sessions.ex:close_session!`.
+One append-only entry in a thread, addressed as `T<thread>.<n>` (`lib/c3/threads/refs.ex:message_ref`). Its `kind` is `:request`, `:response`, `:note` or `:system` (`lib/c3/threads/message.ex:C3.Threads.Message`).
 
-## message (Tn.m)
+**Not to be confused with** a request. A request is one kind of message, and only requests have `to_target` and `request_state`.
 
-An entry in a thread, referenced as `T<thread>.<number>`. Its `kind` is `request`, `response`, `note` or `system`. The body is append-only: only the `request_*`, `claimed_*` and `resolved_at` columns change after creation. Appears in the code as `lib/c3/threads/message.ex:C3.Threads.Message` · `lib/c3/threads/refs.ex:message_ref`.
+## Note
 
-## note
+A message that asks for nothing and resolves nothing (`kind: :note`).
 
-A message that neither asks for anything nor resolves anything. It has no `request_state` and no effect on the thread's status. Appears in the code as `lib/c3/threads/message.ex:kind` (`:note`).
+## Purge
 
-## purge
+The deletion of a closed session and everything in it, run once `retention_days` has passed (`lib/c3/sessions/lifecycle.ex:purge`) or on demand by the admin (`lib/c3/sessions/lifecycle.ex:purge_session`). An open session cannot be purged (`:not_closed`). Files are deleted after their rows.
 
-Permanent deletion of a closed session and everything in it, including its attachment files. It runs automatically after `retention_days`, or immediately at the admin's request. It refuses an open session (`:not_closed`). Appears in the code as `lib/c3/sessions/lifecycle.ex:purge` · `lib/c3/sessions/lifecycle.ex:purge_session`.
+**Not to be confused with** close, which keeps all the data. Also not with `lib/c3/security.ex:purge_history` and `lib/c3/idempotency.ex:purge`, which prune other tables.
 
-**Not to be confused with** `lib/c3/security.ex:purge_history`, which removes only security history (join failures and ended bans) older than 30 days, and `lib/c3/idempotency.ex:purge`, which removes old idempotency keys.
+## Request
 
-## request
+A message that asks a target for something, with its own `request_state`: `:open`, `:claimed`, `:done` or `:cancelled` (`lib/c3/threads/message.ex:request_state`). A thread opened with several targets creates one request per recipient. Cancelling is done by `lib/c3/threads.ex:cancel`. See [`../features/threads-and-requests/00-INDEX.md`](../features/threads-and-requests/00-INDEX.md).
 
-A message that asks one target for something: an agent, a label, or `any`. Addressing several targets creates one request per target. A request carries its own state, described under request_state. Appears in the code as `lib/c3/threads/message.ex:kind` (`:request`) · `lib/c3/threads/targets.ex:resolve`.
+## Response
 
-**Not to be confused with** an HTTP request, and not with a message in general: only messages of kind `request` have a state.
+A message that resolves a request, moving it to `:done`. A response wakes the request's author with a watcher line of kind `answer` (`lib/c3/watch.ex:C3.Watch`).
 
-## request_state vs thread status
+## Secret (security number)
 
-Two separate state machines:
+The numeric secret needed to join a session (`lib/c3/credentials.ex:generate_secret`). It is stored as an Argon2id hash, because a short number needs a slow hash. It is shown only once, at creation, and can be replaced with `lib/c3/sessions.ex:rotate_secret`. Wrong secrets lead to bans.
 
-- **request_state** belongs to each request: `open → claimed → done`, or `cancelled`. It is stored in `lib/c3/threads/message.ex:request_state`.
-- **Thread status** is `pending`, `processing`, `answered` or `finished`. It is a cached value derived from the thread's request states by `lib/c3/threads/derivation.ex:derive`, and only `C3.Threads` writes it, in the same transaction that changed the requests (`lib/c3/threads/thread.ex:C3.Threads.Thread`).
+## Session
 
-Derivation order:
-1. `finished`, if the thread was finished and not reopened;
-2. otherwise `pending`, if any request is `open`;
-3. otherwise `processing`, if any request is `claimed`;
-4. otherwise `answered`.
+The shared space for one task, identified by its code. Its `status` is `:open` or `:closed` (`lib/c3/sessions/session.ex:C3.Sessions.Session`).
 
-Never write a thread's `status` directly.
-
-## response
-
-A message that resolves requests (`→ done`). It names them through `reply_to`, or resolves the requests in the thread that its author holds. It wakes the requests' authors with an `answer` line (`resolved_for`). Appears in the code as `lib/c3/threads/message.ex:kind` (`:response`) · `lib/c3/watch.ex:line`.
-
-## secret
-
-The numeric security number needed to join a session. It is shown once, at creation or rotation, and stored as an Argon2id hash: a slow hash because the secret has low entropy. Wrong secrets lead to bans and to joins_locked. Appears in the code as `lib/c3/credentials.ex:generate_secret` · `lib/c3/sessions/session.ex:secret_hash`.
-
-## seq
-
-The position of an event in its session's log. It increases without gaps within one session and is allocated from `event_seq`. It is the unit of every cursor. Appears in the code as `lib/c3/events/event.ex:seq` · `lib/c3/sessions/session.ex:event_seq`.
-
-## session
-
-One coordination space, identified by its code and joined with its secret. Its `status` is `open` or `closed`, and `closed` is terminal. It closes when an agent or the admin closes it, after inactivity (`last_activity_at`), or at `expires_at` (max TTL). Appears in the code as `lib/c3/sessions/session.ex:C3.Sessions.Session`. See [`../features/session-lifecycle/00-INDEX.md`](../features/session-lifecycle/00-INDEX.md).
+**Not to be confused with** the admin's browser login session (`lib/c3_web/controllers/admin_session_controller.ex`), or with a Claude Code session.
 
 ## system
 
-1. A message `kind` that has no author agent: `lib/c3/threads/message.ex:kind` (`:system`) allows `author_agent_id` to be empty only for this kind.
-2. The `closed_by` value written when the sweeper closes a session: `lib/c3/sessions.ex:close_session!`.
+Two meanings:
+- a message with `kind: :system`, which has no author (`lib/c3/threads/message.ex:C3.Threads.Message`);
+- the `closed_by` value `"system"` when the sweeper closes a session (`lib/c3/sessions.ex:close_session!`).
 
-## thread (Tn)
+## Thread (Tn)
 
-A conversation inside a session, referenced as `T<number>`, with a title, an opener (`opened_by_agent`) and a derived `status`. Appears in the code as `lib/c3/threads/thread.ex:C3.Threads.Thread` · `lib/c3/threads/refs.ex:thread_ref`. See [`../features/threads-and-requests/00-INDEX.md`](../features/threads-and-requests/00-INDEX.md).
+A conversation opened by one agent with a first request, addressed as `T<n>` (`lib/c3/threads/refs.ex:thread_ref`). Its `status` is derived from its requests (`lib/c3/threads/derivation.ex:derive`):
+- `finished` if its opener finished it;
+- `pending` if any request is `open`;
+- `processing` if any request is `claimed`;
+- `answered` otherwise.
 
-## token
+Only the opener can finish a thread (`lib/c3/threads.ex:finish`) or reopen it (`lib/c3/threads.ex:reopen`).
 
-An agent's bearer credential: 256 random bits, returned once, at create or join. Only its SHA-256 is stored, so a request can look up its agent by `token_hash`. A token stops working on leave, revoke or close. A token revoked by a close gets `410`, not `401`. Appears in the code as `lib/c3/credentials.ex:generate_token` · `lib/c3/credentials.ex:hash_token` · `lib/c3_web/plugs/agent_auth.ex:C3Web.Plugs.AgentAuth`. See [`../architecture/03-authentication-and-authorization.md`](../architecture/03-authentication-and-authorization.md).
+**Not to be confused with** `request_state`. Thread status describes the whole thread, while `request_state` describes one message. In particular, **answered ≠ finished**: `answered` only means no request is pending, and the thread stays open until its opener finishes it.
 
-## watch / watcher
+## Token
 
-The Claude Code plugin's shell script. It long-polls `/watch` and exits on the first line that concerns its agent, which wakes that agent. Each line has the form `<kind> <seq> <facts…>`, where `kind` is one of `request`, `answer`, `cancelled`, `claim_expired`, `joined`, `security`, `closing_soon` or `stop`. Nothing an agent did itself ever wakes it. Appears in the code as `plugin/skills/c3/scripts/c3-watch.sh` · `lib/c3/watch.ex:C3.Watch`. See [`../features/watcher-and-plugin/00-INDEX.md`](../features/watcher-and-plugin/00-INDEX.md).
+An agent's bearer credential: 256 random bits, stored as a SHA-256 hash (`lib/c3/credentials.ex:generate_token`, `lib/c3/credentials.ex:hash_token`). It is returned once, on create or join. See [`../architecture/03-authentication-and-authorization.md`](../architecture/03-authentication-and-authorization.md).
+
+## Watch / watcher
+
+The background shell script `plugin/skills/c3/scripts/c3-watch.sh`, which long-polls `/watch` and wakes the agent with one line per relevant event. The server decides what counts as relevant (`lib/c3/watch.ex:C3.Watch`). An agent's own actions never wake it.
