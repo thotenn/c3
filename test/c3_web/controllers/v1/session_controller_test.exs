@@ -92,24 +92,26 @@ defmodule C3Web.V1.SessionControllerTest do
                fresh_conn() |> join(code, %{"secret" => secret}) |> json_response(201)
     end
 
-    test "a wrong secret bans the IP at the first failure and alerts the session",
+    test "wrong secrets past the tolerance ban the IP, and every one alerts the session",
          %{created: created} do
       %{"session_code" => code, "secret" => secret} = created
       ip = unique_ip()
-      conn = with_ip(build_conn(), ip)
 
-      body =
-        conn
-        |> put_req_header("user-agent", "curl/8")
-        |> join(code, %{"secret" => wrong(secret), "agent_label" => "intruder"})
-        |> json_response(403)
+      bodies =
+        for _ <- 1..3 do
+          with_ip(build_conn(), ip)
+          |> put_req_header("user-agent", "curl/8")
+          |> join(code, %{"secret" => wrong(secret), "agent_label" => "intruder"})
+          |> json_response(403)
+        end
 
-      assert body["error"]["code"] == "invalid_secret"
+      assert Enum.all?(bodies, &(&1["error"]["code"] == "invalid_secret"))
 
       ban = Repo.get_by!(IpBan, ip: ip_string(ip))
       assert ban.reason == :invalid_secret
       assert ban.session_code == code
-      assert ban.banned_until == C3.LocalTime.next_midnight(DateTime.utc_now())
+      assert ban.ip_full == ip_string(ip)
+      assert DateTime.diff(ban.banned_until, ban.inserted_at) in 59..60
 
       # Even the right secret is refused now, and so is creating a session.
       assert %{"error" => %{"code" => "ip_banned", "details" => %{"banned_until" => _}}} =
@@ -121,8 +123,9 @@ defmodule C3Web.V1.SessionControllerTest do
                with_ip(build_conn(), ip) |> post(~p"/v1/sessions", %{}) |> json_response(403)
 
       session = Sessions.get_session_by_code(code)
-      [_joined, failed] = Events.list_after(session, 0)
+      [_joined, _, _, failed] = Events.list_after(session, 0)
       assert failed.type == :security_join_failed
+      assert failed.payload["banned_until"]
 
       assert %{"ip" => ip_str, "user_agent" => "curl/8", "attempted_label" => "intruder"} =
                failed.payload
@@ -134,7 +137,12 @@ defmodule C3Web.V1.SessionControllerTest do
       %{"session_code" => code, "secret" => secret, "agent" => %{"token" => token}} = created
       ip = unique_ip()
 
-      with_ip(build_conn(), ip) |> join(code, %{"secret" => wrong(secret)}) |> json_response(403)
+      for _ <- 1..3,
+          do:
+            with_ip(build_conn(), ip)
+            |> join(code, %{"secret" => wrong(secret)})
+            |> json_response(403)
+
       assert C3.Security.banned_until(ip_string(ip))
 
       assert %{"you" => "AG1"} =

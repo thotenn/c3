@@ -14,6 +14,8 @@ defmodule C3.Config do
   | `:long_poll_max_wait` | `C3_LONG_POLL_MAX_WAIT` | `30` seconds — the cap on `wait` of the long-poll |
   | `:sse_keepalive` | `C3_SSE_KEEPALIVE_SECONDS` | `15` — seconds between two keepalive comments of the SSE stream |
   | `:join_lock_ips` | `C3_JOIN_LOCK_IPS` | `3` — distinct IPs with a wrong secret that lock joins |
+  | `:secret_tolerance` | `C3_SECRET_TOLERANCE` | `2` — wrong secrets per subject and session that go without a ban |
+  | `:ipv6_prefix` | `C3_IPV6_PREFIX` | `64` (32..128) — an IPv6 client is banned, counted and rate limited by this network |
   | `:unknown_code_limit` | `C3_UNKNOWN_CODE_LIMIT` | `5` — unknown codes per IP and day before a ban |
   | `:real_ip_header` | `C3_REAL_IP_HEADER` | `nil` — e.g. `x-forwarded-for`; unset = the peer address |
   | `:trusted_proxies` | `C3_TRUSTED_PROXIES` | loopback + private ranges |
@@ -47,6 +49,8 @@ defmodule C3.Config do
     sse_keepalive: 15,
     join_lock_ips: 3,
     unknown_code_limit: 5,
+    secret_tolerance: 2,
+    ipv6_prefix: 64,
     real_ip_header: nil,
     trusted_proxies: ~w(127.0.0.0/8 ::1/128 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 fc00::/7),
     ip_allowlist: [],
@@ -131,6 +135,17 @@ defmodule C3.Config do
         ],
         get(key) <= 0 do
       raise ArgumentError, "#{inspect(key)} must be positive, got #{inspect(get(key))}"
+    end
+
+    prefix = get(:ipv6_prefix)
+
+    unless is_integer(prefix) and prefix in 32..128 do
+      raise ArgumentError, "C3_IPV6_PREFIX must be between 32 and 128, got #{inspect(prefix)}"
+    end
+
+    unless is_integer(get(:secret_tolerance)) and get(:secret_tolerance) >= 0 do
+      raise ArgumentError,
+            "C3_SECRET_TOLERANCE must be 0 or more, got #{inspect(get(:secret_tolerance))}"
     end
 
     for key <- [:trusted_proxies, :ip_allowlist], cidr <- get(key) do

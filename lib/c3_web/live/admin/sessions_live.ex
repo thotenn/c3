@@ -131,7 +131,15 @@ defmodule C3Web.Admin.SessionsLive do
               <td colspan="5" class="px-3 py-6 text-center text-base-content/60">No bans.</td>
             </tr>
             <tr :for={{id, ban} <- @streams.bans} id={id} class="border-t border-base-300">
-              <td class="px-3 py-2 font-mono">{ban.ip}</td>
+              <td class="px-3 py-2 font-mono">
+                {ban.ip}
+                <span
+                  :if={ban.ip_full && ban.ip_full != ban.ip}
+                  class="block text-xs text-base-content/60"
+                >
+                  {ban.ip_full}
+                </span>
+              </td>
               <td class="px-3 py-2">{ban.reason}</td>
               <td class="px-3 py-2 font-mono">{ban.session_code}</td>
               <td class="px-3 py-2"><.time at={ban.banned_until} /></td>

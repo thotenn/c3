@@ -34,7 +34,7 @@ defmodule C3Web.MCP.ParityTest do
 
   @masked ~w(session_code secret token at created_at expires_at last_activity_at
              last_seen_at joined_at last_message_at finished_at resolved_at closed_at closes_at
-             banned_until ip)
+             banned_until ip subject)
 
   # Each step: who calls (:a, :b, or :none for no token), the tool and its arguments. `:code`,
   # `:secret` and a token as an argument are filled in from what earlier steps returned.
@@ -107,6 +107,17 @@ defmodule C3Web.MCP.ParityTest do
   ]
 
   test "every tool answers what its REST route answers" do
+    # The script expects a ban at the first wrong secret.
+    previous = Application.fetch_env(:c3, :secret_tolerance)
+    Application.put_env(:c3, :secret_tolerance, 0)
+
+    on_exit(fn ->
+      case previous do
+        {:ok, v} -> Application.put_env(:c3, :secret_tolerance, v)
+        :error -> Application.delete_env(:c3, :secret_tolerance)
+      end
+    end)
+
     rest = run(&rest_call/3)
     mcp = run(&tool/3)
 

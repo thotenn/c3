@@ -70,8 +70,8 @@ defmodule C3Web.MCP.Tools do
       name: "c3_join_session",
       route: {:post, "/sessions/:code/join"},
       description:
-        "Join a session with its code and security number; you become AGn. A wrong secret bans " <>
-          "this IP until midnight, so never guess it. Returns your token, which every other " <>
+        "Join a session with its code and security number; you become AGn. Wrong secrets ban " <>
+          "this IP, for longer each time, so never guess it. Returns your token, which every other " <>
           "tool needs: keep it in your local state file.",
       properties: %{
         "session_code" => %{"type" => "string", "description" => "The session code."},

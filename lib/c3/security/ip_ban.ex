@@ -7,6 +7,7 @@ defmodule C3.Security.IpBan do
 
   schema "ip_bans" do
     field :ip, :string
+    field :ip_full, :string
     field :reason, Ecto.Enum, values: [:invalid_secret, :unknown_code, :admin]
     field :session_code, :string
     field :banned_until, :utc_datetime_usec
@@ -15,7 +16,7 @@ defmodule C3.Security.IpBan do
     timestamps(updated_at: false)
   end
 
-  @fields ~w(ip reason session_code banned_until lifted_at)a
+  @fields ~w(ip ip_full reason session_code banned_until lifted_at)a
 
   def changeset(ip_ban, attrs) do
     ip_ban

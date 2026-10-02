@@ -58,6 +58,7 @@ defmodule C3Web.Plugs.SecurityConfigTest do
 
   test "the ban hits the IP from the trusted header, not the proxy", %{conn: conn} do
     put_config(:real_ip_header, "x-forwarded-for")
+    put_config(:secret_tolerance, 0)
     %{"session_code" => code} = conn |> post(~p"/v1/sessions", %{}) |> json_response(201)
 
     with_ip(build_conn(), {10, 0, 0, 2})

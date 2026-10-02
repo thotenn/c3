@@ -9,6 +9,7 @@ defmodule C3.Security.JoinFailure do
 
   schema "join_failures" do
     field :ip, :string
+    field :ip_full, :string
 
     field :reason, Ecto.Enum,
       values: [:invalid_secret, :unknown_code, :session_closed, :joins_locked]
@@ -22,7 +23,7 @@ defmodule C3.Security.JoinFailure do
     timestamps(updated_at: false)
   end
 
-  @fields ~w(ip reason attempted_code attempted_label user_agent)a
+  @fields ~w(ip ip_full reason attempted_code attempted_label user_agent)a
 
   def changeset(join_failure, attrs) do
     join_failure

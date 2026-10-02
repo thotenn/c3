@@ -5,13 +5,24 @@ defmodule C3Web.V1.FallbackController do
   alias C3Web.ApiError
 
   def call(conn, {:error, :ip_banned, until}) do
-    ApiError.send_error(conn, 403, "ip_banned", "This IP cannot create or join sessions today", %{
-      banned_until: until
-    })
+    ApiError.send_error(
+      conn,
+      403,
+      "ip_banned",
+      "This IP cannot create or join sessions until banned_until",
+      %{
+        banned_until: until
+      }
+    )
   end
 
   def call(conn, {:error, :invalid_secret}) do
-    ApiError.send_error(conn, 403, "invalid_secret", "Wrong security number; this IP is banned")
+    ApiError.send_error(
+      conn,
+      403,
+      "invalid_secret",
+      "Wrong security number; repeated failures ban this IP"
+    )
   end
 
   def call(conn, {:error, :not_found}) do

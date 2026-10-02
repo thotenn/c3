@@ -262,6 +262,7 @@ defmodule C3Web.MCP.ProtocolTest do
     end
 
     test "a wrong secret by MCP bans the caller's IP for REST too" do
+      put_config(:secret_tolerance, 0)
       {201, %{"session_code" => code}} = tool(fresh_conn(), "c3_create_session")
       ip = unique_ip()
 

@@ -86,8 +86,10 @@ a non-positive TTL, a bad CIDR, a short admin token) stops the boot with an erro
 |---|---|---|
 | `C3_TZ` | `Etc/UTC` | IANA zone whose midnight ends an IP ban and resets the daily unknown-code count |
 | `C3_SECRET_DIGITS` | `6` | Digits of the security number (6–8) |
-| `C3_JOIN_LOCK_IPS` | `3` | Distinct IPs with a wrong security number that lock a session's joins |
-| `C3_UNKNOWN_CODE_LIMIT` | `5` | Unknown session codes per IP and day before a ban |
+| `C3_SECRET_TOLERANCE` | `2` | Wrong security numbers per IP and session that go without a ban. Past them the ban lasts 1 min, 10 min, then 1 h (by the IP's bans of the day), and until midnight once the IP was banned in a second session that day. With the join lock, a session takes about `C3_JOIN_LOCK_IPS - 1` × (tolerance + 1) + 1 wrong numbers before it locks (7 by default); a banned IP can try again once its ban ends |
+| `C3_IPV6_PREFIX` | `64` | IPv6 clients are banned, counted and rate limited by this network (32–128; `128` = each address on its own). The admin and `security.join_failed` still show the exact address |
+| `C3_JOIN_LOCK_IPS` | `3` | Distinct IPs (IPv6: networks) with a wrong security number that lock a session's joins |
+| `C3_UNKNOWN_CODE_LIMIT` | `5` | Unknown session codes per IP and day before a ban until midnight |
 | `C3_REAL_IP_HEADER` | unset | Header carrying the client IP (`x-forwarded-for`, `x-real-ip`). Unset = TCP peer address |
 | `C3_TRUSTED_PROXIES` | `127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7` | Peers whose `C3_REAL_IP_HEADER` is honored (comma-separated CIDRs) |
 | `C3_IP_ALLOWLIST` | empty | CIDRs that are never banned |

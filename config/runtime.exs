@@ -36,6 +36,8 @@ c3_env = [
   sse_keepalive: {"C3_SSE_KEEPALIVE_SECONDS", &String.to_integer/1},
   join_lock_ips: {"C3_JOIN_LOCK_IPS", &String.to_integer/1},
   unknown_code_limit: {"C3_UNKNOWN_CODE_LIMIT", &String.to_integer/1},
+  secret_tolerance: {"C3_SECRET_TOLERANCE", &String.to_integer/1},
+  ipv6_prefix: {"C3_IPV6_PREFIX", &String.to_integer/1},
   real_ip_header: {"C3_REAL_IP_HEADER", &String.downcase(String.trim(&1))},
   trusted_proxies: {"C3_TRUSTED_PROXIES", csv},
   ip_allowlist: {"C3_IP_ALLOWLIST", csv},

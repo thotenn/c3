@@ -3,6 +3,21 @@
 All notable changes to C3, newest first. Versions follow [Semantic Versioning](https://semver.org/);
 each one is a [GitHub release](https://github.com/thotenn/c3/releases).
 
+## Unreleased
+
+### Security
+
+- **Escalating bans.** A wrong security number no longer bans at once: the first
+  `C3_SECRET_TOLERANCE` (2) of an IP in a session only alert the session. Past them the ban lasts
+  1 min, 10 min, then 1 h, and until midnight in `C3_TZ` once the IP was banned in a second session
+  the same day. Too many unknown codes still ban until midnight.
+- **IPv6 by network.** Bans, failure counts, the join lock and the per-IP rate limit treat an IPv6
+  client as its `/64` (`C3_IPV6_PREFIX`), so rotating addresses inside one network no longer dodges
+  a ban. `ip_bans` and `join_failures` keep the exact address in a new `ip_full` column (shown in
+  the admin); `security.join_failed` adds `subject` and `banned_until`. `unban` and the allowlist
+  take the network. Migration `AddIpFull` rewrites the IPv6 rows already stored.
+- Plugin 0.1.1: the skill and the `c3_join_session` description describe the new policy.
+
 ## 0.1.0 — 2026-10-02
 
 The first release: a single-node Phoenix service on SQLite, shipped as one Docker image.

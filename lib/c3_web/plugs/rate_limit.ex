@@ -3,7 +3,8 @@ defmodule C3Web.Plugs.RateLimit do
   Per-minute request limits, `429 rate_limited` with `retry-after` once exceeded (plain
   text on the admin pages).
 
-    * `plug RateLimit, :ip` — per client IP (`C3_RATE_LIMIT_IP`); needs `RealIp` first.
+    * `plug RateLimit, :ip` — per client subject (`C3_RATE_LIMIT_IP`; an IPv6 client by its
+      `C3_IPV6_PREFIX` network); needs `RealIp` first.
     * `plug RateLimit, :token` — per agent (`C3_RATE_LIMIT_TOKEN`); needs `AgentAuth` first.
 
   A tool call of the MCP endpoint counts once per IP, at `/mcp`: the REST request it is
@@ -14,6 +15,7 @@ defmodule C3Web.Plugs.RateLimit do
   import Plug.Conn
 
   alias C3.{Config, RateLimiter}
+  alias C3.Security.CIDR
   alias C3Web.ApiError
 
   @impl true
@@ -21,7 +23,10 @@ defmodule C3Web.Plugs.RateLimit do
 
   @impl true
   def call(%Plug.Conn{private: %{c3_mcp: true}} = conn, :ip), do: conn
-  def call(conn, :ip), do: limit(conn, {:ip, conn.assigns.client_ip}, Config.get(:rate_limit_ip))
+
+  def call(conn, :ip) do
+    limit(conn, {:ip, CIDR.subject(conn.assigns.client_ip)}, Config.get(:rate_limit_ip))
+  end
 
   def call(conn, :token) do
     limit(conn, {:token, conn.assigns.current_agent.token_hash}, Config.get(:rate_limit_token))

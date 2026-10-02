@@ -107,8 +107,9 @@ defmodule C3.Sessions do
     * `{:error, :not_found}` — unknown code; counts toward the IP's daily threshold.
     * `{:error, :session_closed}` / `{:error, :joins_locked}` — recorded, never banned. A
       locked session does not check the secret, so it does not leak whether it was right.
-    * `{:error, :invalid_secret}` — the IP is banned until midnight, `security.join_failed`
-      goes to the session, and enough distinct IPs lock its joins.
+    * `{:error, :invalid_secret}` — `security.join_failed` goes to the session and enough
+      distinct subjects lock its joins. Past `C3_SECRET_TOLERANCE` failures of the subject
+      in the session the subject is banned, for longer each time (`C3.Security`).
     * `{:error, changeset}` — invalid `agent_label`.
   """
   def join_session(code, attrs, %{ip: ip} = meta) do
@@ -173,18 +174,27 @@ defmodule C3.Sessions do
     {:ok, ban} =
       Repo.transaction(fn ->
         Security.record_failure(session, :invalid_secret, failure)
-        ban = Security.ban(failure.ip, :invalid_secret, session.code, now)
+        since = last_reset_at(session)
+
+        ban =
+          if Security.secret_failures(failure.ip, session, since) >
+               Config.get(:secret_tolerance) do
+            until = Security.secret_ban_until(failure.ip, session.code, now)
+            Security.ban(failure.ip, :invalid_secret, session.code, now, until)
+          end
 
         Events.append!(session, :security_join_failed,
           payload: %{
             ip: failure.ip,
+            subject: C3.Security.CIDR.subject(failure.ip),
+            banned_until: ban && ban.banned_until,
             user_agent: failure.user_agent,
             attempted_label: failure.attempted_label,
             at: now
           }
         )
 
-        maybe_lock_joins(session, now)
+        maybe_lock_joins(session, since, now)
         ban
       end)
 
@@ -193,14 +203,15 @@ defmodule C3.Sessions do
   end
 
   # Failures before the last unlock or rotation do not count again, or the next one would
-  # relock at once.
-  defp maybe_lock_joins(session, now) do
-    since =
-      [:session_joins_unlocked, :session_secret_rotated]
-      |> Enum.map(&Events.last_at(session, &1))
-      |> Enum.reject(&is_nil/1)
-      |> Enum.max(DateTime, fn -> nil end)
+  # relock (or ban) at once.
+  defp last_reset_at(session) do
+    [:session_joins_unlocked, :session_secret_rotated]
+    |> Enum.map(&Events.last_at(session, &1))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.max(DateTime, fn -> nil end)
+  end
 
+  defp maybe_lock_joins(session, since, now) do
     ips = Security.invalid_secret_ips(session, since)
 
     if ips >= Config.get(:join_lock_ips) do

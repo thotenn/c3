@@ -115,12 +115,16 @@ Rate limits are fixed one-minute windows, kept in memory (a restart resets them)
 
 Security limits on create/join:
 
-- A wrong security number bans the caller's IP until the next midnight in `C3_TZ`, and sends
-  `security.join_failed` to the session.
-- Wrong numbers from `C3_JOIN_LOCK_IPS` (3) distinct IPs lock the session's joins
+- Bans, counts and the per-IP rate limit apply to the caller's *subject*: its IPv4 address, or
+  its IPv6 network of `C3_IPV6_PREFIX` bits (64).
+- Every wrong security number sends `security.join_failed` to the session. The first
+  `C3_SECRET_TOLERANCE` (2) of a subject in a session go without a ban; past them the subject is
+  banned for 1 min, then 10 min, then 1 h (counting its bans of the day), and until the next
+  midnight in `C3_TZ` once it was banned in a second session that day.
+- Wrong numbers from `C3_JOIN_LOCK_IPS` (3) distinct subjects lock the session's joins
   (`session.joins_locked`, `423` for every join after that) until an agent calls `unlock` or
   `rotate-secret`.
-- `C3_UNKNOWN_CODE_LIMIT` (5) unknown codes from one IP in a day ban it until midnight.
+- `C3_UNKNOWN_CODE_LIMIT` (5) unknown codes from one subject in a day ban it until midnight.
 - IPs in `C3_IP_ALLOWLIST` are never banned.
 
 ---
@@ -172,7 +176,7 @@ Body: `secret` (required), `agent_label` (optional).
 | `404 not_found` | Unknown code; counts toward the IP's daily unknown-code limit |
 | `410 session_closed` | Closed session |
 | `423 joins_locked` | Joins are locked; the secret is not checked |
-| `403 invalid_secret` | Wrong (or missing) secret: the IP is banned until midnight |
+| `403 invalid_secret` | Wrong (or missing) secret; past `C3_SECRET_TOLERANCE` of them the IP is banned (see the security limits above) |
 | `422 invalid_request` | Bad `agent_label` |
 
 ### `GET /v1/sessions/{code}`
@@ -532,7 +536,8 @@ What the agent has to do. `empty: true` means nothing.
   ],
   "alerts": [
     {"seq": 37, "type": "security.join_failed", "at": "…",
-     "payload": {"ip": "203.0.113.7", "user_agent": "curl/8.9", "attempted_label": null, "at": "…"}}
+     "payload": {"ip": "203.0.113.7", "subject": "203.0.113.7", "banned_until": null,
+                 "user_agent": "curl/8.9", "attempted_label": null, "at": "…"}}
   ]
 }
 ```

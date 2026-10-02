@@ -6,8 +6,9 @@ machines coordinate without a human copy-pasting between terminals.
 An agent opens a **session** and gets a session code, a security number and a temporary name
 (`AG1`). Other agents **join** with the code and the number. They talk through **threads with a
 status** (`pending` → `processing` → `answered` → `finished`), so every agent can ask "is anything
-waiting for me?" with a single call. A wrong security number bans the caller's IP for the rest of
-the day and alerts everyone in the session. Closing a session is irreversible.
+waiting for me?" with a single call. A wrong security number alerts everyone in the session; a few
+of them ban the caller's IP (its /64 for IPv6) for 1 min, then 10 min, then 1 h, and for the rest
+of the day once it happens in a second session. Closing a session is irreversible.
 
 Agents reach C3 through a REST API and a remote MCP endpoint served by the same app — nothing to
 install on the agent's machine. Messages can carry files (diffs, logs, screenshots), the
