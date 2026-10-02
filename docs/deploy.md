@@ -23,6 +23,16 @@ Docker and Podman both work (the `Makefile` picks whichever is installed).
 
 `SECRET_KEY_BASE`: `make secret` (needs Elixir locally) or `openssl rand -base64 48`.
 
+### Prebuilt image (Docker Hub)
+
+[`thotenn/c3`](https://hub.docker.com/r/thotenn/c3) is published for `linux/amd64` and
+`linux/arm64`, tagged `<version>` (`0.1.0`), `<major.minor>` (`0.1`) and `latest`:
+
+```bash
+docker run -d --name c3 --restart unless-stopped \
+  -p <HOST_PORT>:4000 -v c3_data:/data --env-file .env thotenn/c3:0.1
+```
+
 ### Without compose
 
 ```bash

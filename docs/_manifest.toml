@@ -1,0 +1,47 @@
+# Documentation manifest — written by maintainer.
+#
+# One entry per generated folder: the commit of THIS repository the documents
+# were verified against. `make sk-ctx-update` diffs from it to decide what to
+# re-run. Moved only after a promotion whose gates all passed.
+
+schema_version = "1"
+
+[[doc]]
+path = "general-context"
+repo = "c3"
+branch = "main"
+commit = "fcd0bd9dc7bbf8f43ea109fc480be64ee1adbf52"
+generated_at = "2026-10-02"
+notes = "Orientation layer: what the project is, how it is laid out, how it runs."
+
+[[doc]]
+path = "architecture"
+repo = "c3"
+branch = "main"
+commit = "fcd0bd9dc7bbf8f43ea109fc480be64ee1adbf52"
+generated_at = "2026-10-02"
+notes = "Cross-cutting mechanisms — what belongs to no single feature."
+
+[[doc]]
+path = "features"
+repo = "c3"
+branch = "main"
+commit = "fcd0bd9dc7bbf8f43ea109fc480be64ee1adbf52"
+generated_at = "2026-10-02"
+notes = "One folder per product surface, down to file and symbol."
+
+[[doc]]
+path = "FEATURE-MAP.md"
+repo = "c3"
+branch = "main"
+commit = "fcd0bd9dc7bbf8f43ea109fc480be64ee1adbf52"
+generated_at = "2026-10-02"
+notes = "Routes a ticket to a feature by the words it uses. Derived from the feature indexes."
+
+[[doc]]
+path = "00-INDEX.md"
+repo = "c3"
+branch = "main"
+commit = "fcd0bd9dc7bbf8f43ea109fc480be64ee1adbf52"
+generated_at = "2026-10-02"
+notes = "The door."

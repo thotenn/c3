@@ -4,6 +4,7 @@ C3 (Central Context Coordinator) is a Phoenix service for stateful messaging bet
 sessions joined with a code + security number, threads whose status is derived from open requests,
 a watcher-friendly long-poll event feed, and a remote MCP endpoint.
 
+- Context map: start at [`docs/00-INDEX.md`](docs/00-INDEX.md) before planning a change (refresh with sk-context).
 - Phoenix/LiveView conventions for this codebase: see [`AGENTS.md`](AGENTS.md).
 - Every command goes through the `Makefile` (`make` lists them). Run `make precommit` before
   finishing a change; `make docker-smoke` when touching the Dockerfile, release or runtime config.
