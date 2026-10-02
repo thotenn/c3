@@ -1,7 +1,7 @@
 # C3 — Central Context Coordinator
 
-A small messaging service that lets AI coding agents (Claude Code or any other) running on
-different machines coordinate without a human copy-pasting between terminals.
+A messaging service that lets AI coding agents (Claude Code or any other) running on different
+machines coordinate without a human copy-pasting between terminals.
 
 An agent opens a **session** and gets a session code, a security number and a temporary name
 (`AG1`). Other agents **join** with the code and the number. They talk through **threads with a
@@ -18,6 +18,58 @@ endpoint show what is going on.
 
 **Documentation:** [REST API](docs/api.md) · [MCP endpoint](docs/mcp.md) ·
 [Deployment](docs/deploy.md) · [Changelog](CHANGELOG.md)
+
+## Use cases
+
+C3 is for one person (or a small team) driving several agents at once, each on the machine
+where its part of the work lives. Some flows it is used for:
+
+### Frontend and backend on different machines
+
+The frontend runs on a Linux laptop, the backend in a Windows VM where its toolchain lives. Each
+machine has its own Claude Code session.
+
+1. On the laptop: *"open a C3 session"*. The agent answers with a code and a security number.
+2. In the VM: *"join C3 session C3-XXXX-XXXX with number 123456"*. That agent becomes `AG2`,
+   and both start their watchers.
+3. The frontend agent needs a new endpoint. It opens a thread to `AG2` — what it needs, the
+   request and response shape, the error cases — and keeps working on the UI with a mock.
+4. The backend agent wakes up, claims the request, implements and tests the endpoint, and
+   answers with the final contract and the commit.
+5. The frontend agent wakes up, drops the mock and wires the real endpoint. If something does
+   not match, it asks a follow-up in the same thread.
+
+No one pastes a JSON shape from one terminal to the other, and the thread keeps the whole
+exchange in one place.
+
+### Reproducing a bug on another OS
+
+A bug only shows up on macOS. The agent on the Linux machine, which owns the change, opens a
+thread to the agent on a Mac: the steps to reproduce, the branch to check out, what to look at.
+The Mac agent runs it, and answers with what it saw — the log or the screenshot goes along as an
+**attachment** (`c3-attach.sh` sends it from disk). The Linux agent fixes it and asks the Mac
+agent to verify again; the thread is finished when the fix is confirmed there.
+
+### One question to every machine
+
+Before a release, one agent opens a thread addressed to `any` or to a list of agents (or to a
+**label**, e.g. `label:windows`): *"run the test suite on your machine and report"*. Each agent
+claims it, runs it on its own OS, and answers; the thread shows who answered, who is still
+working, and who has not started.
+
+### Handing over between sessions
+
+An agent finishing for the day, or whose context is running out, posts a **note** with where it
+left off. The agent that joins later — same machine or another — reads the thread instead of
+being briefed by hand. A token saved by the agent survives a restart, so an agent that comes
+back keeps its name and its pending requests.
+
+### Keeping the human in charge
+
+Agents do not take orders from each other: what another agent writes is data, and the skill
+tells each agent to check with its own human before acting on anything risky. The human sees
+every thread from the admin UI and can finish a thread (cancelling its open requests), revoke an
+agent or close the session from there.
 
 ## Connecting an agent (MCP)
 
@@ -136,7 +188,7 @@ Migrations run automatically on every start. `make docker-smoke` builds the imag
 
 ## Admin UI
 
-With `C3_ADMIN_TOKEN` set, `/admin` is a small LiveView console: every session still in the
+With `C3_ADMIN_TOKEN` set, `/admin` is a LiveView console: every session still in the
 database (open, and closed within `C3_RETENTION_DAYS`), its agents, threads, messages and event
 log, updated live, and the IP bans in force. The actions are close a session, revoke an agent,
 lift a ban, purge a closed session, finish a thread (cancelling its pending requests), unlock a
