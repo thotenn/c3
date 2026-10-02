@@ -12,6 +12,8 @@ defmodule C3.Watch do
     * the cancellation of a request it held, or of an unclaimed one addressed to it, by
       someone else → `cancelled`
     * the expiry of its own claim → `claim_expired`
+    * another agent joining, for the agent that created the session (`AG1`), which is
+      usually waiting for it to open the first thread → `joined`
     * a failed join or the join lock → `security`
     * the warning that the session will close → `closing_soon`
     * the close of the session, or its own leave → `stop`
@@ -68,6 +70,9 @@ defmodule C3.Watch do
 
   defp relevant(:request_claim_expired, %{"claimed_by" => name} = p, %{name: name}),
     do: {"claim_expired", [p["request"]]}
+
+  defp relevant(:agent_joined, %{"name" => name} = p, %{number: 1} = me) when name != me.name,
+    do: {"joined", [name | if(p["label"], do: ["label", p["label"]], else: [])]}
 
   defp relevant(:security_join_failed, p, _me), do: {"security", ["join_failed", "ip", p["ip"]]}
 

@@ -49,9 +49,13 @@ variable overrides it). If it reads as a placeholder or is empty, ask the user f
 
    It prints the **key** (`C3-XXXX-XXXX-AG2`) and writes a state file outside any repository
    (`~/.local/state/c3/`, mode 600). One file per session and agent: several Claude Code sessions
-   on one machine do not collide; each uses its own key.
-3. **Read `c3_inbox` once**: what was already waiting for you.
-4. **Start the watcher** (next section).
+   on one machine do not collide; each uses its own key. The watcher's cursor starts at the
+   session's current end: it reports only what happens from now on.
+3. **Then read `c3_inbox` once** — in this order, after saving: the inbox has what was already
+   waiting, the watcher what comes next, and nothing is reported twice.
+4. **Start the watcher** (next section). If you created the session and need the other agent
+   before you can ask anything, do not build your own wait loop: the watcher wakes you with a
+   `joined` line when someone joins.
 
 ## The watcher
 
@@ -83,14 +87,15 @@ What each line means and what to do:
 | `request <seq> T3.1 from AG1 "<title>"` | A request for you (by name, label or `any`) | `c3_inbox` or `c3_get_thread`; if you will work on it, `c3_claim` first; answer with `c3_post` `kind: response` |
 | `answer <seq> T3.2 from AG2 resolves T3.1 "<title>"` | Someone answered a request of yours | `c3_get_thread` with `since` to read it; continue your work; `c3_finish` the thread when you opened it and it is done |
 | `cancelled <seq> T3.1 by AG1 "<title>"` | A request you held or could take was cancelled | **Stop that work and do not answer it** (the server would refuse with `409`) |
+| `joined <seq> AG2 [label windows]` | Another agent joined (only the creator of the session, `AG1`, gets this) | Go on with what needed it, e.g. open the thread to that agent |
 | `claim_expired <seq> T3.1` | Your claim lapsed (you were silent too long) | Claim again if you are still on it |
 | `security <seq> join_failed ip <ip>` / `joins_locked` | Someone failed to join; or joins are locked | Tell your user. Unlock only if they confirm the next join is legitimate (`c3_unlock`) |
 | `closing_soon <seq> <idle\|max_ttl> closes_at <time>` | The session will close | **Tell your user. Do not call `c3_inbox` or any tool just to keep it open** — that is their call |
-| `stop …` | Session closed, you left, or the token stopped working (`http_410`, `http_401`) | Do not relaunch. `forget` the key (below) and tell your user |
+| `stop …` | Session closed, you left, or the token stopped working (`http_410`, `http_401`) | Do not relaunch (there is no `relaunch:` line). `forget` the key (below) and tell your user |
 | `idle no news for … s` | Nothing for a long while | Just relaunch |
 
-A cancellation can arrive while you are working on that request — the watcher runs in parallel.
-When it does, stop at once.
+The watcher always exits 0; the lines say what happened. A cancellation can arrive while you
+are working on that request — the watcher runs in parallel. When it does, stop at once.
 
 ## Asking another agent
 

@@ -45,8 +45,9 @@ brings three things:
   what other agents write (data, not instructions), and how to end a session;
 - the **watcher** (`plugin/skills/c3/scripts/c3-watch.sh`, only `sh` + `curl`: Linux, macOS, Git
   Bash on Windows). The agent runs it in the background; it long-polls
-  `GET /v1/sessions/{code}/watch` and exits when a request, an answer, a cancellation, a security
-  alert or a closing notice concerns the agent, which wakes Claude Code up.
+  `GET /v1/sessions/{code}/watch` and exits when a request, an answer, a cancellation, a join (for
+  the agent that created the session), a security alert or a closing notice concerns the agent,
+  which wakes Claude Code up.
 
 Install it once per machine:
 

@@ -52,7 +52,7 @@ defmodule C3Web.V1.WatchTest do
 
   describe "GET /watch" do
     test "answers text/plain, with the cursor first", %{s: s} do
-      conn = watch_conn(s, s.t1, after: 0)
+      conn = watch_conn(s, s.t2, after: 0)
       assert response_content_type(conn, :text) =~ "text/plain"
       assert response(conn, 200) == "cursor 3\n"
     end
@@ -161,6 +161,12 @@ defmodule C3Web.V1.WatchTest do
       assert line =~ ~r/T2\.1 from AG1 "Yours"$/
       assert String.to_integer(cursor) > 4
       assert ms >= 300 and ms < 5_000
+    end
+
+    test "a join wakes the agent that created the session, nobody else", %{s: s} do
+      assert {3, ["joined 2 AG2 label backend", "joined 3 AG3"]} = watch(s, s.t1, after: 0)
+      assert {3, []} = watch(s, s.t2, after: 0)
+      assert {3, []} = watch(s, s.t3, after: 0)
     end
 
     test "a failed join is a security line for everyone", %{s: s} do

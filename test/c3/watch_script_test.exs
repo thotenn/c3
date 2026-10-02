@@ -87,7 +87,8 @@ defmodule C3.WatchScriptTest do
     s = session!()
     key = save!(ctx, s, "AG3", s.t3)
     assert key == "#{s.code}-AG3"
-    assert state(ctx, key) =~ "after=0\n"
+    # The cursor starts at the session's end (the three joins), not at 0.
+    assert state(ctx, key) =~ "after=3\n"
 
     task = wait_async(ctx, key)
     Process.sleep(300)
@@ -126,7 +127,7 @@ defmodule C3.WatchScriptTest do
     assert out =~ ~r/^request \d+ T1\.1 from AG1 "After the cut"$/m
   end
 
-  test "a closed session is a stop line, exit 3, and no relaunch", ctx do
+  test "a closed session is a stop line, and no relaunch", ctx do
     serve(ctx.port)
     s = session!()
     key = save!(ctx, s, "AG2", s.t2)
@@ -135,13 +136,14 @@ defmodule C3.WatchScriptTest do
     Process.sleep(300)
     authed(s.t1) |> post(~p"/v1/sessions/#{s.code}/close", %{}) |> json_response(200)
 
-    {out, 3} = Task.await(task, 15_000)
+    {out, 0} = Task.await(task, 15_000)
     assert out =~ ~r/^stop \d+ session_closed by AG1 reason manual$/m
     refute out =~ "relaunch"
 
     # Relaunched anyway, it stops at once on the 410.
-    {out, 3} = System.cmd("sh", [@script, "wait", key], env: env(ctx, []))
+    {out, 0} = System.cmd("sh", [@script, "wait", key], env: env(ctx, []))
     assert out =~ ~r/^stop http_410 /m
+    refute out =~ "relaunch"
   end
 
   test "without news it exits with an idle line and the relaunch", ctx do
@@ -157,6 +159,21 @@ defmodule C3.WatchScriptTest do
     assert out =~ ~r/^idle no news for 1 s$/m
     assert out =~ ~r/^relaunch: sh .* wait #{key}$/m
     assert state(ctx, key) =~ ~r/after=[1-9]/
+  end
+
+  test "after save, the backlog is the inbox's: the watcher only reports what comes next", ctx do
+    serve(ctx.port)
+    s = session!()
+    open_thread(s, ["AG2"], "Already waiting")
+    key = save!(ctx, s, "AG2", s.t2)
+
+    task = wait_async(ctx, key)
+    Process.sleep(300)
+    open_thread(s, ["AG2"], "New")
+
+    {out, 0} = Task.await(task, 15_000)
+    assert out =~ ~r/^request \d+ T2\.1 from AG1 "New"$/m
+    refute out =~ "Already waiting"
   end
 
   test "save keeps the cursor for the same token, list never shows it", ctx do

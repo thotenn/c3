@@ -4,7 +4,7 @@
 #
 # Only needs sh + curl: Linux, macOS and Git Bash on Windows.
 #
-#   c3-watch.sh save <url> <code> <name>   # the token on stdin; prints the key <code>-<name>
+#   c3-watch.sh save <url> <code> <name>   # token on stdin; prints the key; then read the inbox
 #   c3-watch.sh wait <key>                 # run with run_in_background; exits on the first news
 #   c3-watch.sh forget <key>               # after leaving or closing the session
 #   c3-watch.sh list                       # saved keys (never the tokens)
@@ -12,12 +12,15 @@
 # State: one file per (session, agent) in $C3_STATE_DIR (default
 # ${XDG_STATE_HOME:-$HOME/.local/state}/c3), outside any repository, mode 600: url, code,
 # name, token and the cursor `after`, saved after every poll so a restart loses nothing.
+# A new `save` starts the cursor at the session's current end, so the watcher only reports
+# what happens after it: read the inbox right after saving for what was already waiting.
 #
 # `wait` long-polls GET <url>/v1/sessions/<code>/watch, which answers a `cursor <seq>` line
 # and one line per event that concerns the agent (the server decides). It exits 0 with
-# those lines, 0 with an `idle` line after C3_WATCH_MAX_SECONDS without news, and 3 with a
-# `stop` line when the session is closed or the token no longer works. Every exit but a
-# stop ends with the exact command to relaunch it. A network error is retried with backoff.
+# those lines, with an `idle` line after C3_WATCH_MAX_SECONDS without news, or with a
+# `stop` line when the session is closed or the token no longer works — always exit 0; the
+# lines say what happened. Every exit but a stop ends with the exact command to relaunch
+# it. A network error is retried with backoff. Exit 2 is a usage error.
 
 set -u
 
@@ -50,6 +53,31 @@ write_state() {
     "$url" "$code" "$name" "$token" "$after" >"$tmp") && mv -f "$tmp" "$file"
 }
 
+# GET /watch once; sets `status` and `body`. Returns curl's exit status.
+poll() {
+  out=$(printf 'header = "Authorization: Bearer %s"\n' "$2" |
+    curl -sS -K - -A "c3-watch/1" --max-time $(($4 + 15)) \
+      -w '\n%{http_code}' "$1/watch?after=$3&wait=$4" 2>/dev/null) || return
+  status=${out##*"
+"}
+  body=${out%"
+"*}
+}
+
+cursor_of() { printf '%s\n' "$1" | sed -n 's/^cursor \([0-9][0-9]*\)$/\1/p'; }
+
+# The session's last seq, paging /watch with wait=0 until the cursor stops moving; 0 if the
+# server cannot be reached.
+current_end() {
+  at=0
+  while poll "$1" "$2" "$at" 0 && [ "$status" = 200 ]; do
+    next=$(cursor_of "$body")
+    [ -n "$next" ] && [ "$next" != "$at" ] || break
+    at=$next
+  done
+  echo "$at"
+}
+
 relaunch() {
   printf 'relaunch: sh "%s" wait %s\n' "$SELF" "$1"
 }
@@ -60,8 +88,11 @@ cmd_save() {
   IFS= read -r token || [ -n "${token:-}" ] || { echo "c3-watch: the token goes on stdin" >&2; exit 2; }
   key="$code-$name"
   file=$(state_file "$key")
-  after=0
-  [ -f "$file" ] && [ "$(get token "$file")" = "$token" ] && after=$(get after "$file")
+  if [ -f "$file" ] && [ "$(get token "$file")" = "$token" ]; then
+    after=$(get after "$file")
+  else
+    after=$(current_end "$url/v1/sessions/$code" "$token")
+  fi
   write_state "$file" "$url" "$code" "$name" "$token" "${after:-0}"
   echo "$key"
 }
@@ -82,11 +113,7 @@ cmd_wait() {
 
   while [ $(($(date +%s) - started)) -lt "$MAX_SECONDS" ]; do
     # The token goes to curl on stdin, never on its command line.
-    out=$(printf 'header = "Authorization: Bearer %s"\n' "$token" |
-      curl -sS -K - -A "c3-watch/1" --max-time $((POLL_WAIT + 15)) \
-        -w '\n%{http_code}' "$url/v1/sessions/$code/watch?after=$after&wait=$POLL_WAIT" 2>/dev/null)
-
-    if [ $? -ne 0 ]; then
+    if ! poll "$url/v1/sessions/$code" "$token" "$after" "$POLL_WAIT"; then
       sleep "$backoff"
       backoff=$((backoff * 2))
       [ "$backoff" -gt 60 ] && backoff=60
@@ -94,14 +121,10 @@ cmd_wait() {
     fi
 
     backoff=$RETRY
-    status=${out##*"
-"}
-    body=${out%"
-"*}
 
     case $status in
       200)
-        cursor=$(printf '%s\n' "$body" | sed -n 's/^cursor \([0-9][0-9]*\)$/\1/p')
+        cursor=$(cursor_of "$body")
         if [ -n "$cursor" ] && [ "$cursor" != "$after" ]; then
           after=$cursor
           write_state "$file" "$(get url "$file")" "$code" "$name" "$token" "$after"
@@ -111,7 +134,7 @@ cmd_wait() {
         if [ -n "$news" ]; then
           printf 'c3 %s %s\n%s\n' "$code" "$name" "$news"
           if printf '%s\n' "$news" | grep -q '^stop '; then
-            exit 3
+            exit 0
           fi
           relaunch "$key"
           exit 0
@@ -120,7 +143,7 @@ cmd_wait() {
       401 | 403 | 404 | 410)
         printf 'c3 %s %s\nstop http_%s %s\n' "$code" "$name" "$status" \
           "$(printf '%s' "$body" | tr -d '\n' | cut -c 1-200)"
-        exit 3
+        exit 0
         ;;
       429)
         sleep 30
