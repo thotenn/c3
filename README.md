@@ -18,7 +18,7 @@ endpoint show what is going on.
 > **Status:** `v0.1.0`, the first release. Single node, SQLite.
 
 **Documentation:** [REST API](docs/api.md) · [MCP endpoint](docs/mcp.md) ·
-[Deployment](docs/deploy.md) · [Changelog](CHANGELOG.md)
+[Deployment](docs/deploy.md) · [Security model](docs/security.md) · [Changelog](CHANGELOG.md)
 
 ## Use cases
 

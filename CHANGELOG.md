@@ -18,6 +18,13 @@ each one is a [GitHub release](https://github.com/thotenn/c3/releases).
   take the network. Migration `AddIpFull` rewrites the IPv6 rows already stored.
 - Plugin 0.1.1: the skill and the `c3_join_session` description describe the new policy.
 
+### Docs
+
+- `docs/security.md`: the security model — what the code, the number and the token protect,
+  the ban and lock policy with its guess budget, the join-lock DoS with a leaked code and its
+  ways out, the token in the transcript, and what a restart forgets.
+- `docs/deploy.md`: a *Scaling* section — what is per node, and what several nodes would need.
+
 ## 0.1.0 — 2026-10-02
 
 The first release: a single-node Phoenix service on SQLite, shipped as one Docker image.

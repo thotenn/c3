@@ -20,6 +20,7 @@ facts that decide how this codebase is read — the ones no file listing implies
 | A ticket, and you need to know what it touches | [`FEATURE-MAP.md`](FEATURE-MAP.md) — routes a ticket by the words it uses |
 | A feature you can already name | [`features/00-INDEX.md`](features/00-INDEX.md) |
 | A question about something cross-cutting | [`architecture/00-INDEX.md`](architecture/00-INDEX.md) |
+| A question about the security model or scaling | [`security.md`](security.md) · [`deploy.md#scaling`](deploy.md#scaling) |
 
 ## Documents
 

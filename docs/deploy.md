@@ -227,7 +227,29 @@ In-memory state is not in the database and is lost on restart: rate-limit counte
 in-flight marks of `Idempotency-Key`. Bans are reloaded from the database at boot.
 
 Run **one** instance per database file: the event fan-out, rate limits and ban cache are
-per node.
+per node (see [Scaling](#scaling)).
+
+## Scaling
+
+C3 is single-node by design: one instance, one SQLite file. Scale it up (CPU, a faster disk),
+not out. What ties it to one node:
+
+- **In-memory state (ETS).** The ban cache (a mirror of the active bans, reloaded at boot), the
+  rate-limit counters and the in-flight `Idempotency-Key` marks live in the node's memory. Two
+  nodes would each have their own: rate limits would double, a ban taken on one node would not
+  be seen by the other until a restart, and two copies of one keyed request could both run.
+- **Local PubSub.** Every committed event is announced on the node's PubSub; that is what wakes
+  long-polls, SSE streams, `/watch` and the admin UI. A client connected to another node would
+  only see the event on its next poll.
+- **The sweeper.** One sweeper a minute expires claims, warns and closes sessions, and purges
+  data and files. Two nodes would run it twice against the same rows.
+- **SQLite.** One writer at a time, on a local file; the attachments are on the same volume.
+
+Going to several nodes would mean a shared database (the queries are kept portable to
+PostgreSQL), shared storage for attachments, a distributed PubSub and cache (Erlang clustering
+or an external store), and a single sweeper (a leader or a lock). None of that exists today:
+`DNS_CLUSTER_QUERY` stays unset. One node already serves many sessions; the long-polls are
+cheap processes, and the database is the first limit.
 
 ## Migrations
 
