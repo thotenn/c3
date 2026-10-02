@@ -38,6 +38,14 @@ defmodule C3Web.Router do
     plug C3Web.Plugs.RateLimit, :ip
   end
 
+  # The remote MCP endpoint: tool calls are dispatched in-process as `/v1` requests.
+  # No `accepts`: a legacy client's `GET` (`Accept: text/event-stream`) must get `405`, not `406`.
+  pipeline :mcp do
+    plug C3Web.Plugs.Origin
+    plug C3Web.Plugs.RealIp
+    plug C3Web.Plugs.RateLimit, :ip
+  end
+
   scope "/", C3Web do
     pipe_through :browser
 
@@ -48,6 +56,14 @@ defmodule C3Web.Router do
     pipe_through :api
 
     get "/healthz", HealthController, :show
+  end
+
+  scope "/", C3Web do
+    pipe_through :mcp
+
+    post "/mcp", MCPController, :post
+    get "/mcp", MCPController, :not_allowed
+    delete "/mcp", MCPController, :not_allowed
   end
 
   scope "/v1", C3Web.V1 do

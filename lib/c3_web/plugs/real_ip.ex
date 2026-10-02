@@ -6,6 +6,9 @@ defmodule C3Web.Plugs.RealIp do
   `x-real-ip`, …) the header is honored only when the peer is a trusted proxy
   (`C3_TRUSTED_PROXIES`); its comma-separated list is read from the right, skipping trusted
   proxies, so a client cannot spoof its address by prepending entries.
+
+  A request the MCP endpoint dispatches in-process (`C3Web.MCP.Dispatch`) keeps the address
+  `/mcp` already resolved.
   """
   @behaviour Plug
 
@@ -18,6 +21,7 @@ defmodule C3Web.Plugs.RealIp do
   def init(opts), do: opts
 
   @impl true
+  def call(%Plug.Conn{private: %{c3_mcp: true}} = conn, _opts), do: conn
   def call(conn, _opts), do: assign(conn, :client_ip, client_ip(conn))
 
   defp client_ip(conn) do
