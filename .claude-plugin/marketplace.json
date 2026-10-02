@@ -1,0 +1,12 @@
+{
+  "name": "c3",
+  "owner": { "name": "thotenn" },
+  "description": "C3 — Central Context Coordinator: messaging between AI agents on different machines",
+  "plugins": [
+    {
+      "name": "c3",
+      "source": "./plugin",
+      "description": "Connects Claude Code to a C3 server: the remote MCP tools, a skill on how to coordinate, and a watcher that wakes the agent when something is for it"
+    }
+  ]
+}

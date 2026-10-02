@@ -210,6 +210,7 @@ defmodule C3.Threads do
 
         Thread |> where(id: ^thread.id) |> Repo.update_all(set: [last_message_at: now])
         resolved_refs = Enum.map(resolved, &message_ref(thread, &1))
+        resolved_for = requesters(resolved)
 
         for {message, to} <- messages do
           Events.append!(session(thread), :message_posted,
@@ -223,7 +224,8 @@ defmodule C3.Threads do
               author: author.name,
               to: to,
               reply_to: reply_to && message_ref(thread, reply_to),
-              resolved: resolved_refs
+              resolved: resolved_refs,
+              resolved_for: resolved_for
             }
           )
         end
@@ -361,7 +363,8 @@ defmodule C3.Threads do
                 author: me.name,
                 to: nil,
                 reply_to: request_ref,
-                resolved: []
+                resolved: [],
+                resolved_for: []
               }
             )
 
@@ -848,6 +851,17 @@ defmodule C3.Threads do
 
   defp holder(thread, %Message{claimed_by_agent: %Agent{name: name}} = request),
     do: {message_ref(thread, request), name}
+
+  # The names of the agents that wrote `requests`, in order and without repeats: who an
+  # answer is for, so the watcher can wake them.
+  defp requesters([]), do: []
+
+  defp requesters(requests) do
+    ids = requests |> Enum.map(& &1.author_agent_id) |> Enum.uniq()
+    names = Agent |> where([a], a.id in ^ids) |> select([a], {a.id, a.name}) |> Repo.all()
+    names = Map.new(names)
+    Enum.map(ids, &Map.fetch!(names, &1))
+  end
 
   defp single([one]), do: one
   defp single(_), do: nil

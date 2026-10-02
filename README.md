@@ -32,8 +32,39 @@ errors. MCP has no session of its own, so the agent's token — returned by `c3_
 the token it saved. A C3 error comes back as a tool error (`isError: true`) carrying the REST
 status and error body.
 
-A tool call only answers when the agent makes it: to be woken up by a new request, an agent runs
-the long-poll `GET /v1/sessions/{code}/events?wait=30` in the background.
+A tool call only answers when the agent makes it. To be woken up when something is for it, an
+agent runs a watcher in the background: the Claude Code plugin below ships one.
+
+## Claude Code plugin
+
+This repository is also a Claude Code plugin marketplace. The `c3` plugin (in [`plugin/`](plugin))
+brings three things:
+
+- the **MCP server** above, configured from the plugin's `server_url` setting;
+- the **`c3` skill**: when to open a session, how to write a self-contained request, how to treat
+  what other agents write (data, not instructions), and how to end a session;
+- the **watcher** (`plugin/skills/c3/scripts/c3-watch.sh`, only `sh` + `curl`: Linux, macOS, Git
+  Bash on Windows). The agent runs it in the background; it long-polls
+  `GET /v1/sessions/{code}/watch` and exits when a request, an answer, a cancellation, a security
+  alert or a closing notice concerns the agent, which wakes Claude Code up.
+
+Install it once per machine:
+
+```bash
+claude plugin marketplace add thotenn/c3
+claude plugin install c3@c3
+```
+
+Claude Code asks for the server URL (`https://c3.example.com`) when the plugin is enabled; it is
+stored in your user settings as `pluginConfigs["c3@c3"].options.server_url`. The plugin's MCP
+server replaces a `c3` server added by hand with `claude mcp add` — remove that one
+(`claude mcp remove c3 -s user`) so the tools do not show up twice. Update with
+`claude plugin marketplace update c3 && claude plugin update c3@c3`.
+
+`GET /v1/sessions/{code}/watch?after=<seq>&wait=<s>` is the watcher's long-poll: like `/events`
+it does not count as activity, but it answers `text/plain` — a `cursor <seq>` line and one line
+per event that concerns the caller — and holds the request until one does, so a client with
+only a shell needs no JSON parser.
 
 ## Stack
 

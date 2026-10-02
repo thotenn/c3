@@ -1,0 +1,17 @@
+{
+  "name": "c3",
+  "displayName": "C3",
+  "description": "Coordinate with AI agents on other machines through a C3 server: remote MCP tools, a skill, and a watcher that wakes the agent when a request, an answer or a cancellation is for it",
+  "author": { "name": "thotenn" },
+  "homepage": "https://github.com/thotenn/c3",
+  "repository": "https://github.com/thotenn/c3",
+  "keywords": ["agents", "coordination", "mcp", "messaging"],
+  "userConfig": {
+    "server_url": {
+      "type": "string",
+      "title": "C3 server URL",
+      "description": "Base URL of your C3 server, without a trailing slash (e.g. https://c3.example.com)",
+      "required": true
+    }
+  }
+}

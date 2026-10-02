@@ -216,7 +216,7 @@ defmodule C3.Threads.WritesTest do
                post(ag2, thread, %{"kind" => "note", "reply_to" => "x"})
     end
 
-    test "the message.posted payload says what it resolved", %{
+    test "the message.posted payload says what it resolved and for whom", %{
       ag1: ag1,
       ag2: ag2,
       session: session
@@ -234,7 +234,8 @@ defmodule C3.Threads.WritesTest do
                "author" => "AG2",
                "to" => nil,
                "reply_to" => "T1.1",
-               "resolved" => ["T1.1"]
+               "resolved" => ["T1.1"],
+               "resolved_for" => ["AG1"]
              }
     end
   end

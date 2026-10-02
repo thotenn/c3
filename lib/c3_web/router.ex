@@ -32,7 +32,8 @@ defmodule C3Web.Router do
     plug C3Web.Plugs.RateLimit, :token
   end
 
-  # SSE clients send `Accept: text/event-stream`, which `:v1` would refuse with a 406.
+  # Routes that answer something other than JSON (SSE, the watcher's text lines): a client's
+  # `Accept: text/event-stream` or `text/plain` would get a 406 from `:v1`.
   pipeline :sse do
     plug C3Web.Plugs.RealIp
     plug C3Web.Plugs.RateLimit, :ip
@@ -104,6 +105,7 @@ defmodule C3Web.Router do
     pipe_through [:sse, :feed]
 
     get "/sessions/:code/events/stream", EventController, :stream
+    get "/sessions/:code/watch", EventController, :watch
   end
 
   # Enable LiveDashboard in development

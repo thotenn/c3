@@ -27,6 +27,15 @@ fmt: ## Format the code
 secret: ## Print a fresh SECRET_KEY_BASE
 	@mix phx.gen.secret
 
+##@ Plugin (Claude Code)
+
+plugin-validate: ## Validate the marketplace and the c3 plugin with the claude CLI
+	claude plugin validate .
+	claude plugin validate ./plugin
+
+test-watcher: ## Test the /watch endpoint and the plugin's watcher script (needs sh + curl)
+	mix test test/c3_web/controllers/v1/watch_test.exs test/c3/watch_script_test.exs
+
 ##@ Docker
 
 docker-build: ## Build the production image
@@ -51,4 +60,4 @@ help: ## Show this help
 	  /^[a-zA-Z0-9_-]+:.*?##/ { printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2 } \
 	  /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) }' $(MAKEFILE_LIST)
 
-.PHONY: setup dev test precommit fmt secret docker-build docker-up docker-down docker-logs docker-smoke help
+.PHONY: setup dev test precommit fmt secret plugin-validate test-watcher docker-build docker-up docker-down docker-logs docker-smoke help

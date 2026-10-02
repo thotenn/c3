@@ -11,13 +11,17 @@ defmodule C3Web.V1.EventController do
       `data: <json>`, resuming after `Last-Event-ID` (or `?after=`), with a `: keepalive`
       comment every `sse_keepalive` seconds. Ends after `session.closed`, when the agent
       leaves, or when the client goes away.
+    * `GET /sessions/:code/watch?after=<seq>&wait=<s>` — the long-poll of the watcher
+      script, in `text/plain`: a `cursor <seq>` line and one line per event that concerns
+      the caller (`C3.Watch`). Irrelevant events advance the cursor without answering, so
+      the request is held until something concerns the agent or `wait` passes.
     * `POST /heartbeat` — an explicit sign of life; any request already is one.
 
   None of them counts as activity on the session (see `C3Web.Plugs.AgentAuth`).
   """
   use C3Web, :controller
 
-  alias C3.{Events, Repo, Sessions}
+  alias C3.{Events, Repo, Sessions, Watch}
   alias C3Web.V1.EventJSON
 
   action_fallback C3Web.V1.FallbackController
@@ -37,6 +41,39 @@ defmodule C3Web.V1.EventController do
       render(conn, :index, events: events, after: after_seq)
     end
   end
+
+  def watch(conn, params) do
+    with {:ok, after_seq} <- int_param(params, "after", 0),
+         {:ok, wait} <- int_param(params, "wait", 0) do
+      %{current_session: session, current_agent: agent} = conn.assigns
+      deadline = now_ms() + min(wait, C3.Config.get(:long_poll_max_wait)) * 1000
+      {cursor, lines} = watch_after(session, agent, after_seq, deadline)
+
+      conn
+      |> put_resp_content_type("text/plain")
+      |> send_resp(200, Enum.map(["cursor #{cursor}" | lines], &[&1, "\n"]))
+    end
+  end
+
+  # Polls again with the new cursor while the events that come are someone else's.
+  defp watch_after(session, agent, cursor, deadline) do
+    remaining = max(deadline - now_ms(), 0)
+
+    case Events.wait_after(session, cursor, remaining, limit: @max_limit) do
+      [] ->
+        {cursor, []}
+
+      events ->
+        cursor = List.last(events).seq
+
+        case Enum.flat_map(events, &List.wrap(Watch.line(&1, agent))) do
+          [] when remaining > 0 -> watch_after(session, agent, cursor, deadline)
+          lines -> {cursor, lines}
+        end
+    end
+  end
+
+  defp now_ms, do: System.monotonic_time(:millisecond)
 
   def heartbeat(conn, _params) do
     agent = conn.assigns.current_agent
