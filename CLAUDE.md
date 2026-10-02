@@ -10,3 +10,6 @@ a watcher-friendly long-poll event feed, and a remote MCP endpoint.
 - Database: SQLite via `ecto_sqlite3`. Keep queries portable to Postgres.
 - This repository is public: deployment docs and configs stay generic (`example.com`,
   `<HOST_PORT>`, "the reverse proxy"). No real hostnames, IPs or infrastructure details.
+- Versions: a release bumps `version` in `mix.exs` (tag `vX.Y.Z`, `## X.Y.Z — date` in
+  `CHANGELOG.md`); any change under `plugin/` also bumps `plugin/.claude-plugin/plugin.json` to
+  that same number — the plugin's version is pinned, so `claude plugin update` skips it otherwise.
