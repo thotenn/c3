@@ -47,10 +47,31 @@ defmodule C3Web.Router do
     plug C3Web.Plugs.RateLimit, :ip
   end
 
+  # The admin pages: a 404 while C3_ADMIN_TOKEN is unset, and limited per IP like /v1.
+  pipeline :admin do
+    plug C3Web.Plugs.AdminEnabled
+    plug C3Web.Plugs.RealIp
+    plug C3Web.Plugs.RateLimit, :ip
+  end
+
   scope "/", C3Web do
     pipe_through :browser
 
     get "/", PageController, :home
+  end
+
+  scope "/admin", C3Web do
+    pipe_through [:browser, :admin]
+
+    get "/login", AdminSessionController, :new
+    post "/login", AdminSessionController, :create
+    delete "/logout", AdminSessionController, :delete
+
+    live_session :admin, on_mount: {C3Web.AdminAuth, :require_admin} do
+      live "/", Admin.SessionsLive, :index
+      live "/sessions/:code", Admin.SessionLive, :show
+      live "/sessions/:code/threads/:number", Admin.SessionLive, :thread
+    end
   end
 
   scope "/", C3Web do

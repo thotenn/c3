@@ -91,7 +91,7 @@ What each line means and what to do:
 | `claim_expired <seq> T3.1` | Your claim lapsed (you were silent too long) | Claim again if you are still on it |
 | `security <seq> join_failed ip <ip>` / `joins_locked` | Someone failed to join; or joins are locked | Tell your user. Unlock only if they confirm the next join is legitimate (`c3_unlock`) |
 | `closing_soon <seq> <idle\|max_ttl> closes_at <time>` | The session will close | **Tell your user. Do not call `c3_inbox` or any tool just to keep it open** — that is their call |
-| `stop …` | Session closed, you left, or the token stopped working (`http_410`, `http_401`) | Do not relaunch (there is no `relaunch:` line). `forget` the key (below) and tell your user |
+| `stop …` | Session closed, you left, the admin revoked you (`revoked`), or the token stopped working (`http_410`, `http_401`) | Do not relaunch (there is no `relaunch:` line). `forget` the key (below) and tell your user |
 | `idle no news for … s` | Nothing for a long while | Just relaunch |
 
 The watcher always exits 0; the lines say what happened. A cancellation can arrive while you

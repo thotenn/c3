@@ -10,7 +10,7 @@ defmodule C3Web.V1.EventController do
     * `GET /sessions/:code/events/stream` — SSE: every event as `id: <seq>`, `event: <type>`,
       `data: <json>`, resuming after `Last-Event-ID` (or `?after=`), with a `: keepalive`
       comment every `sse_keepalive` seconds. Ends after `session.closed`, when the agent
-      leaves, or when the client goes away.
+      leaves or is revoked, or when the client goes away.
     * `GET /sessions/:code/watch?after=<seq>&wait=<s>` — the long-poll of the watcher
       script, in `text/plain`: a `cursor <seq>` line and one line per event that concerns
       the caller (`C3.Watch`). Irrelevant events advance the cursor without answering, so
@@ -156,6 +156,7 @@ defmodule C3Web.V1.EventController do
 
   defp ends_stream?(%{type: :session_closed}, _agent), do: true
   defp ends_stream?(%{type: :agent_left, actor_agent_id: id}, %{id: id}), do: true
+  defp ends_stream?(%{type: :agent_revoked, payload: %{"name" => name}}, %{name: name}), do: true
   defp ends_stream?(_event, _agent), do: false
 
   defp last_event_id(conn, params) do

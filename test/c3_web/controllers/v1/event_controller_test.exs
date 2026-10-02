@@ -250,6 +250,16 @@ defmodule C3Web.V1.EventControllerTest do
       assert [{3, "agent.left", %{"actor" => "AG2"}}] = frames(conn.resp_body)
     end
 
+    test "ends when the admin revokes the agent", %{s: s} do
+      ag2 = C3.Sessions.get_agent_by_token(s.t2)
+      task = later(100, fn -> C3.Admin.revoke_agent(ag2) end)
+      conn = s |> stream(authed(s.t2) |> put_req_header("last-event-id", "2"))
+      Task.await(task)
+
+      assert [{3, "agent.revoked", %{"payload" => %{"name" => "AG2", "by" => "admin"}}}] =
+               frames(conn.resp_body)
+    end
+
     test "sends a keepalive comment while idle", %{s: s} do
       put_config(:sse_keepalive, 1)
       closing = close_later(s, 1_300)

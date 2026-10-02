@@ -16,7 +16,7 @@ defmodule C3.Watch do
       usually waiting for it to open the first thread → `joined`
     * a failed join or the join lock → `security`
     * the warning that the session will close → `closing_soon`
-    * the close of the session, or its own leave → `stop`
+    * the close of the session, its own leave, or the admin revoking it → `stop`
 
   What the agent did itself never wakes it. Lines have the form
   `<kind> <seq> <facts…>`; the only free text, a thread title, goes last, quoted, on one
@@ -86,6 +86,7 @@ defmodule C3.Watch do
     do: {"stop", ["session_closed", "by", p["closed_by"], "reason", p["reason"]]}
 
   defp relevant(:agent_left, %{"name" => name}, %{name: name}), do: {"stop", ["you_left"]}
+  defp relevant(:agent_revoked, %{"name" => name}, %{name: name}), do: {"stop", ["revoked"]}
 
   defp relevant(_type, _payload, _me), do: nil
 

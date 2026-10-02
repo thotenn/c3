@@ -10,7 +10,7 @@ defmodule C3.Sessions.Lifecycle do
       apply).
     * `purge/1` — deletes the sessions closed more than `retention_days` ago (`0` = at the
       first sweep after the close), in the explicit order of `schema.md` (*Ciclo de vida de
-      los datos*).
+      los datos*); `purge_session/1` deletes one, for the admin.
 
   The idle close re-checks `last_activity_at` in its `UPDATE`, so a request that lands
   between the scan and the close keeps the session open.
@@ -100,7 +100,22 @@ defmodule C3.Sessions.Lifecycle do
     |> where([s], s.status == :closed and s.closed_at <= ^cutoff)
     |> select([s], s.id)
     |> Repo.all()
-    |> Enum.count(fn id -> match?({:ok, _}, Repo.transaction(fn -> delete_session!(id) end)) end)
+    |> Enum.count(&match?({:ok, _}, purge_session(&1)))
+  end
+
+  @doc """
+  Deletes the closed session `session_id` and everything in it, now — what `purge/1` does
+  when the retention runs out, and the admin's purge. `{:error, :not_closed}` for an open
+  session, `{:error, :not_found}` for one already gone.
+  """
+  def purge_session(session_id) do
+    Repo.transaction(fn ->
+      case Repo.get(Session, session_id) do
+        %Session{status: :closed} -> delete_session!(session_id)
+        %Session{} -> Repo.rollback(:not_closed)
+        nil -> Repo.rollback(:not_found)
+      end
+    end)
   end
 
   # Children first, by hand: SQLite's cascade order with the cross FKs to `agents` is not

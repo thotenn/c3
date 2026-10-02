@@ -63,6 +63,21 @@ defmodule C3.Security do
     end
   end
 
+  @doc """
+  Lifts every ban of `ip` in force (`lifted_at`) and drops it from `BanCache`, so `create`
+  and `join` work from it again at once. Returns how many bans it lifted; `0` is not an
+  error (the ban may have just expired).
+  """
+  def unban(ip, now \\ DateTime.utc_now()) when is_binary(ip) do
+    {lifted, _} =
+      IpBan
+      |> where([b], b.ip == ^ip and b.banned_until > ^now and is_nil(b.lifted_at))
+      |> Repo.update_all(set: [lifted_at: now])
+
+    BanCache.delete(ip)
+    lifted
+  end
+
   @doc "Mirrors a committed ban into ETS."
   def cache_ban(nil), do: :ok
   def cache_ban(%IpBan{ip: ip, banned_until: until}), do: BanCache.put(ip, until)

@@ -40,3 +40,6 @@ config :phoenix_live_view,
 # Sort query params output of verified routes for robust url comparisons
 config :phoenix,
   sort_verified_routes_query_params: true
+
+# The admin pages are on in test; C3.AdminTest turns them off to check the 404.
+config :c3, admin_token: "test-admin-token-0123456789abcdefghijkl"

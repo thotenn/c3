@@ -11,6 +11,8 @@ defmodule C3.Events do
   `{:c3_events, session_id, seq}` — only the highest `seq` of each transaction, and only
   after the commit (`C3.Repo.transaction/2` calls `publish_after/1`). The message says
   "there is something up to `seq`"; the table is the truth, so a listener queries it again.
+  The same message also goes to the `admin` topic (`subscribe_admin/0`), for the list of
+  sessions of the admin pages.
 
   `wait_after/4`, the long-poll, subscribes *before* querying `seq > after`: an event
   committed before the query is in its result, one committed after it arrives as a message,
@@ -26,6 +28,7 @@ defmodule C3.Events do
   @default_limit 100
   @pending {__MODULE__, :pending}
   @preloads [:actor_agent, :thread, message: :thread]
+  @admin_topic "admin"
 
   @doc """
   Appends an event of `type` to the session with the next `seq`. Call inside a transaction.
@@ -79,14 +82,27 @@ defmodule C3.Events do
   end
 
   defp broadcast(pending) do
-    for {session_id, seq} <- pending do
-      Phoenix.PubSub.broadcast(C3.PubSub, topic(session_id), {:c3_events, session_id, seq})
+    for {session_id, seq} <- pending, topic <- [topic(session_id), @admin_topic] do
+      Phoenix.PubSub.broadcast(C3.PubSub, topic, {:c3_events, session_id, seq})
     end
 
     :ok
   end
 
   defp topic(session_id), do: "session:#{session_id}"
+
+  @doc """
+  Subscribes the calling process to the announcements of every session — what the admin's
+  list of sessions listens to — and to the admin's own notices (`notify_admin/1`).
+  """
+  def subscribe_admin, do: Phoenix.PubSub.subscribe(C3.PubSub, @admin_topic)
+
+  @doc """
+  Tells the admin pages about a change that leaves no event behind: `{:c3_admin, message}`
+  (a lifted ban, a purged session).
+  """
+  def notify_admin(message),
+    do: Phoenix.PubSub.broadcast(C3.PubSub, @admin_topic, {:c3_admin, message})
 
   @doc "Subscribes the calling process to the session's events (`{:c3_events, id, seq}`)."
   def subscribe(%Session{id: session_id}),
@@ -156,6 +172,20 @@ defmodule C3.Events do
     |> where(session_id: ^session_id, type: ^type)
     |> select([e], max(e.inserted_at))
     |> Repo.one()
+  end
+
+  @doc """
+  The last events of a session, newest first: at most `limit`, and only those with
+  `seq < before` when given. For the admin's event log.
+  """
+  def list_recent(%Session{id: session_id}, limit, before \\ nil) do
+    Event
+    |> where([e], e.session_id == ^session_id)
+    |> then(fn q -> if before, do: where(q, [e], e.seq < ^before), else: q end)
+    |> order_by(desc: :seq)
+    |> limit(^limit)
+    |> preload(^@preloads)
+    |> Repo.all()
   end
 
   @doc """

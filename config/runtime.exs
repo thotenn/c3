@@ -43,7 +43,8 @@ c3_env = [
   rate_limit_ip: {"C3_RATE_LIMIT_IP", &String.to_integer/1},
   max_body_bytes: {"C3_MAX_BODY_BYTES", &String.to_integer/1},
   claim_ttl: {"C3_CLAIM_TTL_MINUTES", &(String.to_integer(&1) * 60)},
-  mcp_allowed_origins: {"C3_MCP_ALLOWED_ORIGINS", csv}
+  mcp_allowed_origins: {"C3_MCP_ALLOWED_ORIGINS", csv},
+  admin_token: {"C3_ADMIN_TOKEN", &String.trim/1}
 ]
 
 for {key, {var, parse}} <- c3_env, value <- [System.get_env(var)], value not in [nil, ""] do

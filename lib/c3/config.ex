@@ -23,6 +23,8 @@ defmodule C3.Config do
   | `:max_body_bytes` | `C3_MAX_BODY_BYTES` | `65536` — a message body, in bytes; over it → `413` |
   | `:claim_ttl` | `C3_CLAIM_TTL_MINUTES` | 30 min, in seconds — a claim whose agent stays silent that long goes back to `open` |
   | `:mcp_allowed_origins` | `C3_MCP_ALLOWED_ORIGINS` | `[]` — browser origins allowed on `/mcp` (`https://app.example.com`); a request with any other `Origin` gets `403`. Agents send none |
+  | `:admin_token` | `C3_ADMIN_TOKEN` | `nil` — the token of the admin pages (`/admin`), 32 characters or more; unset = no admin, `/admin` is a `404` |
+  | `:admin_session_ttl` | — | 12 h, in seconds — how long an admin login lasts |
   | `:last_seen_throttle` | — | `60` seconds between two `last_seen_at` writes of an agent, and between two `last_activity_at` writes of a session |
   | `:sweeper` | — | `true` — run `C3.Sweeper` (off in test, where the sandbox owns the DB) |
   """
@@ -47,6 +49,8 @@ defmodule C3.Config do
     max_body_bytes: 65_536,
     claim_ttl: 30 * 60,
     mcp_allowed_origins: [],
+    admin_token: nil,
+    admin_session_ttl: 12 * 3600,
     last_seen_throttle: 60,
     sweeper: true,
     sweep_interval_ms: 60_000
@@ -77,6 +81,12 @@ defmodule C3.Config do
 
     if get(:retention_days) < 0 do
       raise ArgumentError, "C3_RETENTION_DAYS must be 0 or more, got #{get(:retention_days)}"
+    end
+
+    case get(:admin_token) do
+      nil -> :ok
+      token when byte_size(token) >= 32 -> :ok
+      _ -> raise ArgumentError, "C3_ADMIN_TOKEN must be 32 characters or more (make secret)"
     end
 
     for key <- [:trusted_proxies, :ip_allowlist], cidr <- get(key) do

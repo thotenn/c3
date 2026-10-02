@@ -12,11 +12,8 @@ defmodule C3Web.Layouts do
   embed_templates "layouts/*"
 
   @doc """
-  Renders your app layout.
-
-  This function is typically invoked from every template,
-  and it often contains your application menu, sidebar,
-  or similar.
+  The layout of every page: the C3 header and the flash. `admin` adds the admin's
+  navigation and logout; `wide` drops the reading width for the admin tables.
 
   ## Examples
 
@@ -31,39 +28,51 @@ defmodule C3Web.Layouts do
     default: nil,
     doc: "the current [scope](https://hexdocs.pm/phoenix/scopes.html)"
 
+  attr :admin, :boolean, default: false, doc: "show the admin navigation"
+  attr :wide, :boolean, default: false, doc: "use the full width"
+
   slot :inner_block, required: true
 
   def app(assigns) do
     ~H"""
-    <header class="navbar px-4 sm:px-6 lg:px-8">
-      <div class="flex-1">
-        <a href="/" class="flex-1 flex w-fit items-center gap-2">
-          <img src={~p"/images/logo.svg"} width="36" />
-          <span class="text-sm font-semibold">v{Application.spec(:phoenix, :vsn)}</span>
-        </a>
-      </div>
-      <div class="flex-none">
-        <ul class="flex flex-column px-1 space-x-4 items-center">
-          <li>
-            <a href="https://phoenixframework.org/" class="btn btn-ghost">Website</a>
-          </li>
-          <li>
-            <a href="https://github.com/phoenixframework/phoenix" class="btn btn-ghost">GitHub</a>
-          </li>
-          <li>
-            <.theme_toggle />
-          </li>
-          <li>
-            <a href="https://hexdocs.pm/phoenix/overview.html" class="btn btn-primary">
-              Get Started <span aria-hidden="true">&rarr;</span>
-            </a>
-          </li>
-        </ul>
+    <header class="border-b border-base-300 px-4 sm:px-6">
+      <div class={[
+        "mx-auto flex items-center justify-between gap-4 py-3",
+        if(@wide, do: "max-w-7xl", else: "max-w-3xl")
+      ]}>
+        <.link
+          navigate={if @admin, do: ~p"/admin", else: ~p"/"}
+          class="flex items-baseline gap-2"
+        >
+          <span class="font-mono text-lg font-bold tracking-tight">C3</span>
+          <span :if={@admin} class="text-xs uppercase tracking-widest text-base-content/60">
+            admin
+          </span>
+        </.link>
+        <nav class="flex items-center gap-3 text-sm">
+          <.link
+            :if={@admin}
+            navigate={~p"/admin"}
+            class="rounded px-2 py-1 hover:bg-base-200 transition-colors"
+          >
+            Sessions
+          </.link>
+          <.link
+            :if={@admin}
+            id="admin-logout"
+            href={~p"/admin/logout"}
+            method="delete"
+            class="rounded px-2 py-1 hover:bg-base-200 transition-colors"
+          >
+            Log out
+          </.link>
+          <.theme_toggle />
+        </nav>
       </div>
     </header>
 
-    <main class="px-4 py-20 sm:px-6 lg:px-8">
-      <div class="mx-auto max-w-2xl space-y-4">
+    <main class="px-4 py-8 sm:px-6">
+      <div class={["mx-auto space-y-6", if(@wide, do: "max-w-7xl", else: "max-w-3xl")]}>
         {render_slot(@inner_block)}
       </div>
     </main>

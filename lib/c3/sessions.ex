@@ -251,6 +251,34 @@ defmodule C3.Sessions do
   end
 
   @doc """
+  The admin revokes an agent: like `leave/1` — its token stops working and its claims go
+  back to `open` — but the agent ends `revoked`, not `left`, and the event is
+  `agent.revoked`, with `by: "admin"`. Returns `{:ok, released}`, or `{:error,
+  :not_active}` when the agent had already left, been revoked or its session closed.
+  """
+  def revoke(%Agent{} = agent) do
+    now = now()
+
+    Repo.transaction(fn ->
+      {revoked, _} =
+        Agent
+        |> where([a], a.id == ^agent.id and a.status == :active)
+        |> Repo.update_all(set: [status: :revoked, left_at: now, updated_at: now])
+
+      if revoked == 0, do: Repo.rollback(:not_active)
+
+      {released, thread_ids} = Threads.release_claims!(agent)
+
+      Events.append!(%Session{id: agent.session_id}, :agent_revoked,
+        payload: %{name: agent.name, by: "admin", released: released}
+      )
+
+      Threads.refresh_threads!(thread_ids, nil)
+      released
+    end)
+  end
+
+  @doc """
   Closes the agent's session for good: every active token is revoked and from then on every
   route of the session answers `410`. `{:error, :session_closed}` if it already was.
   """
@@ -262,13 +290,18 @@ defmodule C3.Sessions do
 
   @doc """
   Closes the open session `session_id` inside the caller's transaction: status, `closed_at`,
-  `closed_by` (the actor's name, or `"system"`) and `reason`, every active token revoked and
+  `closed_by` (the actor's name; `"system"` for `nil`, `"admin"` for `:admin`) and `reason`, every active token revoked and
   `session.closed` emitted. Rolls back with `:session_closed` if it was not open, or if
   `where` (an extra condition on the session row, e.g. still idle) does not hold. Returns
   the session.
   """
   def close_session!(session_id, reason, actor, now, where \\ dynamic(true)) do
-    closed_by = if actor, do: actor.name, else: "system"
+    {closed_by, actor} =
+      case actor do
+        nil -> {"system", nil}
+        :admin -> {"admin", nil}
+        %Agent{name: name} -> {name, actor}
+      end
 
     {closed, _} =
       Session

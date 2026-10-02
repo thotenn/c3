@@ -1,0 +1,20 @@
+<Layouts.app flash={@flash}>
+  <div class="mx-auto mt-16 max-w-sm">
+    <h1 class="text-2xl font-semibold tracking-tight">Admin</h1>
+    <p class="mt-2 text-sm text-base-content/70">
+      Sign in with the admin token (<code class="font-mono">C3_ADMIN_TOKEN</code>).
+    </p>
+
+    <.form for={@form} id="admin-login-form" action={~p"/admin/login"} class="mt-6 space-y-4">
+      <.input
+        field={@form[:token]}
+        type="password"
+        label="Admin token"
+        autocomplete="current-password"
+        required
+        autofocus
+      />
+      <.button id="admin-login-submit" class="btn btn-primary w-full">Sign in</.button>
+    </.form>
+  </div>
+</Layouts.app>
