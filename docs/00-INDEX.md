@@ -2,20 +2,15 @@
 doc: 00-INDEX
 repo: c3
 kind: folder-index
-anchored_to: fcd0bd9
+anchored_to: fa64fbd
 generated: 2026-10-02
+origin: generated
 ---
 # c3 — Index
 
-Three facts decide how c3 is read. **Thread state is derived, not written**: `threads.status` is a
-cache that `lib/c3/threads.ex` recomputes from the requests (one request per recipient) inside the
-same transaction, and `awaiting` / `processing_by` are never stored. **There is no per-session
-process**: writes serialize on a thread row lock and atomic `UPDATE … RETURNING` counters, events
-are published to PubSub only after the outermost commit, and one `C3.Sweeper` runs every periodic
-job. **There are two doors and one router**: REST under `/v1` and MCP at `/mcp`, where each tool
-call is replayed in-process through the same router — so auth, `410`, idempotency and error shapes
-are identical by construction. The secret only serves `join`; after that an agent is its token, and
-an IP ban never cuts a token.
+_(This door was generated from the partition. **Replace this paragraph** with the two or three
+facts that decide how this codebase is read — the ones no file listing implies. Delete the
+`origin: generated` line when you do, and `make sk-ctx-indexes` will stop rewriting it.)_
 
 ## Start here
 
@@ -36,8 +31,8 @@ an IP ban never cuts a token.
 
 ## Quick facts
 
-- **Source roots:** `lib`, `plugin`, .ex / .heex / .sh. 79 files, every one owned
+- **Source roots:** `lib`, `plugin`, .ex / .heex / .sh. 82 files, every one owned
   by exactly one document — which is what the coverage gate proves before any of this promotes.
 - **Surfaces:** 11 features — 3 at tier A, 6 at tier B, 2 at tier C.
-- **Anchored to:** `fcd0bd9` — see `_manifest.toml` for the branch, and `history.md`
+- **Anchored to:** `fa64fbd` — see `_manifest.toml` for the branch, and `history.md`
   for this tree's Known gaps.

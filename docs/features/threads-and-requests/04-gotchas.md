@@ -2,92 +2,125 @@
 doc: features/threads-and-requests/04-gotchas
 repo: c3
 kind: feature-gotchas
-anchored_to: fcd0bd9
+anchored_to: fa64fbd
 generated: 2026-10-02
 ---
 # Threads and Requests — gotchas
 
 ## Non-obvious behaviour
 
-### `threads.status` is a cache, and only `apply_state!` may write it
-The status column looks like normal state, but it is really the stored result of `C3.Threads.Derivation`. It is recomputed inside every write transaction. If you change a request's `request_state` and skip `apply_state!`, the thread's status falls out of date and nothing reports it. Code that changes requests from outside the context (for example leaving a session) must call `refresh_threads!` in the same transaction. · `lib/c3/threads.ex:apply_state!` · `lib/c3/threads.ex:refresh_threads!` · `lib/c3/threads/thread.ex:changeset`
-**Costs you:** `GET /v1/threads?status=pending` and the `thread.status_changed` events stop matching the requests. The status filter reads the cached column (`lib/c3/threads.ex:filter_status`), while `awaiting`/`processing_by` are recomputed on every read (`lib/c3/threads.ex:states`). So a single response can contradict itself.
+### `threads.status` is a cache, and only one function writes it
+`threads.status` reads like ordinary column state, but it is derived. `apply_state!` recomputes it from the request rows with `C3.Threads.Derivation.derive/2` and writes it inside the same transaction as each write. Every write ends by calling it. · `lib/c3/threads.ex:apply_state!` · `lib/c3/threads/thread.ex:C3.Threads.Thread`
+**Costs you:** if you change `messages.request_state` anywhere else (a migration, an admin path, a new function) and skip `apply_state!` or `refresh_threads!/2`, the stored status drifts from `awaiting`/`processing_by`. Those two fields are computed on every read by `lib/c3/threads/queries.ex:states`. You also lose the `thread.status_changed` event.
 
-### `pending` beats `processing`
-When a thread has both open and claimed requests, its status is `pending`. `processing_by` is still filled in. A thread is `processing` only when no request is open. · `lib/c3/threads/derivation.ex:derive`
-**Costs you:** a UI or agent that treats `pending` as "nobody is working on it" is wrong for multi-target threads.
+### `pending` wins over `processing`
+A thread with one open request and one claimed request is `pending`, not `processing`. `awaiting` and `processing_by` are always both computed, so a `pending` thread can show a non-empty `processing_by`. · `lib/c3/threads/derivation.ex:derive`
+**Costs you:** UI or watcher logic that treats "`processing` means someone is working" as the only signal misses work that is in progress on pending threads.
 
-### Every write starts by locking the thread row, and lock order matters
-Each writer starts with an `UPDATE … RETURNING` that bumps `lock_version`. That is the per-thread serialization on Postgres. On SQLite, every writer is already serialized. `release_claims!` and `expire_claims` lock their threads *before* touching messages, in thread-id order. The build notes say this order avoids inverting lock order against a concurrent post, which would deadlock on Postgres. · `lib/c3/threads.ex:lock_thread!` · `lib/c3/threads.ex:release_claims!` · `lib/c3/threads.ex:expire_claims`
-**Costs you:** if you reorder these, or add a write that updates messages first, you get deadlocks that only show up on Postgres.
+### Every write locks the thread with an `UPDATE`, not a `SELECT … FOR UPDATE`
+`lock_thread!` runs `update_all` with `inc: [lock_version: 1]` and pattern-matches `{1, [thread]}`. Each write, including a no-op `finish`/`reopen`, bumps `lock_version` and `updated_at`. · `lib/c3/threads.ex:lock_thread!`
+**Costs you:** you cannot use `updated_at` or `lock_version` to mean "content changed". A missing thread id crashes with a `MatchError` instead of returning `{:error, …}`.
 
-### A response without `reply_to` resolves everything you may answer
-With no `reply_to`, a `response` resolves every pending request in the thread that is addressed to the author and not held by someone else. `reply_to` is filled in only when exactly one request was resolved. When nothing is resolvable, the response is still posted and resolves nothing. · `lib/c3/threads.ex:post_message` · `lib/c3/threads.ex:resolvable!` · `lib/c3/threads.ex:single`
-**Costs you:** one bare "done" answers several requests at once, including `any` and `label:` requests you never claimed.
+### A `response` without `reply_to` resolves several requests
+With no `reply_to`, a response resolves every pending request of the thread that is addressed to the author and not held by someone else. Requests that are still `open` get claimed on the way. · `lib/c3/threads/guards.ex:resolvable!` · `lib/c3/threads.ex:resolve!`
+**Costs you:** one bare "done" from an agent closes all of its requests in the thread, including ones it never claimed. `reply_to` on the stored message is only filled in when exactly one request resolved (`lib/c3/threads.ex:single`).
 
-### `reply_to` pointing at a non-request resolves nothing, silently
-If a response's `reply_to` points at a note or another response, it is accepted and resolves no request. There is no error. · `lib/c3/threads.ex:resolvable!`
-**Costs you:** an agent that thinks it answered a request leaves the request open.
+### A response that resolves nothing still succeeds
+A response that replies to a `note` or `response` resolves nothing, and so does a bare response when nothing is addressed to the author (`lib/c3/threads/guards.ex:resolvable!`). Both return `201` with `resolved: []`. Only replying to a *request* runs the strict `actionable!` checks: 403 if it is not addressed to you, 409 if it is already resolved or held by someone else. · `lib/c3/threads/guards.ex:actionable!`
+**Costs you:** a client cannot use a `201` as proof that it answered something. It has to check `resolved`.
 
-### You can answer without claiming
-A response to an `open` request moves it straight to `done`, and sets `claimed_by_agent_id`/`claimed_at` to the responder. That is why `done` allows `claimed_by` to be set or blank. · `lib/c3/threads.ex:resolve!` · `lib/c3/threads/message.ex:validate_claimed_by`
-**Costs you:** if you assume every `done` request went through a `request.claimed` event, your event counts come out wrong.
+### Who an `any` request is addressed to
+An `any` request is addressed to everyone except its author. A `label:` request is addressed to whoever holds that label right now, matched on the agent's current `label`. · `lib/c3/threads/queries.ex:addressed_to` · `lib/c3/threads/guards.ex:addressed_to?`
+**Costs you:** the SQL version (`addressed_to`) and the in-memory version (`addressed_to?`) must stay identical. The inbox and claim-all use the first; claim-by-id and reply use the second. A label request can also have no holder at all: `C3.Threads.Targets` does not check that anyone holds the label (`lib/c3/threads/targets.ex:resolve`).
 
-### `any` never includes its author, and a label needs no holder
-`to: "any"` is addressed to everyone except the agent that wrote it. This holds for the inbox, for claiming and for answering. `label:x` is accepted even when no agent has that label. Naming yourself, or naming an agent that has left, is a `422`. A request to an agent that leaves *after* it was sent stays open forever; only `cancel` or a forced `finish` clears it. · `lib/c3/threads.ex:addressed_to` · `lib/c3/threads/targets.ex:check`
-**Costs you:** threads that stay `pending` forever, waiting on a departed agent or an empty label.
+### Target names are case-insensitive, and a list never fails on duplicates
+`"ag2"` is upcased, `"ANY"` is accepted, and duplicates in a `to` list are dropped silently. Addressing yourself, an agent that left (`status != :active`) or an unknown agent is a 422. · `lib/c3/threads/targets.ex:parse` · `lib/c3/threads/targets.ex:check`
+**Costs you:** the number of requests created can be smaller than `length(to)`. Count `requests` in the `thread.opened` payload instead.
 
-### A claim conflict is a `409`, but "already mine" is a no-op
-`claim` with no `request_id` takes every open request addressed to you. If you already hold every candidate, the call succeeds and returns them. It fails with `409` (with `claimed_by`) only when you hold nothing and claimed nothing. With an explicit `request_id`, a request addressed to someone else is a `403`, not a `409`. · `lib/c3/threads.ex:claim` · `lib/c3/threads.ex:actionable!`
-**Costs you:** a client that retries on `409` and treats `403` as transient will loop.
+### `to` on a `response` or `note` is rejected, but `nil` passes
+`targets_for` returns 422 for any non-nil `to` on a non-request. · `lib/c3/threads/guards.ex:targets_for`
 
-### Cancel checks permission before state
-A stranger cancelling an already-resolved request gets `403`, not `409`. Only the request's author or the thread's opener may cancel. Unlike post and claim, `cancel` does not check whether the thread is finished; on a finished thread, every request is already terminal, so cancel returns `409`. · `lib/c3/threads.ex:cancellable_request!`
-**Costs you:** tests that expect `409` from the wrong actor fail.
+### Claim-all only fails when it gets nothing
+Without `request_id`, claim succeeds if the agent already holds something or newly claims something. It returns 409 (with `claimed_by`) only when both are empty. Claiming what you already hold is a no-op that still answers `200`. · `lib/c3/threads.ex:claim`
+**Costs you:** a racing loser of an `any` request gets 409 from claim-all, but only if it held nothing else in that thread.
 
-### A finished thread rejects posts and claims, and `finish`/`reopen` repeat as no-ops
-A post or claim on a finished thread is a `409` ("reopen it first"). Repeating `finish` or `reopen` returns `changed: false` rather than an error. A reopened thread always comes back as `answered`, because finishing left no pending request. `admin_finish` is always forced and records `cancelled_by: "admin"` with a `nil` actor. · `lib/c3/threads.ex:finish_thread` · `lib/c3/threads.ex:reopen` · `lib/c3/threads.ex:admin_finish`
-**Costs you:** code that expects `reopen` to restore the old `pending` state is wrong; there is nothing left to wait on.
+### Message numbers come from `max(number) + 1`, thread numbers from a session counter
+Thread numbers come from `sessions.next_thread_number` (`lib/c3/threads.ex:next_thread_number!`). Message numbers come from `coalesce(max(m.number), 0) + 1` and are only safe under the thread lock (`lib/c3/threads.ex:next_message_number!`). A post to N targets takes N consecutive numbers (`lib/c3/threads.ex:insert_requests!`).
+**Costs you:** inserting a message outside `lock_thread!` produces duplicate numbers. `unique_constraint([:thread_id, :number])` in `lib/c3/threads/message.ex:changeset` turns those into errors. A rolled-back `open_thread` also rolls back the counter, so thread numbers have no gaps.
 
-### Claim expiry needs both a stale claim and a silent agent
-`expire_claims` releases a claim only when `claimed_at` is older than `claim_ttl` **and** the holder's `last_seen_at` is too, and only in open sessions. An agent that keeps polling keeps its claims indefinitely. · `lib/c3/threads.ex:expire_claims`
-**Costs you:** you cannot use the TTL to time-box work.
+### `cancel` does not check `finished_at`
+`post_message` and `claim` call `rollback_finished`. `cancel` does not, and relies on finishing having left no pending request, so a cancel on a finished thread is a 409 "already cancelled". · `lib/c3/threads.ex:cancel` · `lib/c3/threads/guards.ex:cancellable_request!`
+**Costs you:** if you ever let a finished thread keep pending requests, cancel starts writing to finished threads.
 
-### Message numbers are `max + 1` and are shared by every request of a post
-A post to N targets inserts N requests, numbered consecutively from `next_message_number!`. Each one emits its own `message.posted`. Thread numbers come from a counter on the session, and a rolled-back open does not consume a number. · `lib/c3/threads.ex:insert_requests!` · `lib/c3/threads.ex:next_message_number!` · `lib/c3/threads.ex:next_thread_number!`
-**Costs you:** the API returns `messages` as a list even for a single `to`; clients that read only the first entry miss the others.
+### Reopen always lands on `answered`
+Finishing cancels every pending request (or refuses), so `reopen` re-derives to `answered`. Reopening does not restore the cancelled requests. · `lib/c3/threads.ex:reopen` · `lib/c3/threads.ex:finish_thread`
 
-### Ref parsing accepts more than one form
-`reply_to`, `request_id` and `since` accept `"T3.2"`, `"2"` or the integer `2`, in any case, with whitespace trimmed. A ref to a different thread is a `422`, not a lookup elsewhere. · `lib/c3/threads.ex:parse_message_ref` · `lib/c3/threads.ex:parse_thread_ref`
+### A cancelled request carries `resolved_at`; a released claim does not reset it
+`cancel` and `finish_thread` set `resolved_at` and clear `claimed_by_*`. `release_claims!` and `expire_claims` put a request back to `open` and clear only the claim columns. · `lib/c3/threads.ex:release_claims!` · `lib/c3/threads.ex:expire_claims`
+**Costs you:** `resolved_at` on its own does not tell you `done` from `cancelled`. Read `state`.
 
-### `GET /v1/inbox` has side effects
-Reading the inbox marks the cancellations and alerts in it as seen, so each one appears only once. Claimed requests appear only for their holder. · `lib/c3_web/controllers/v1/inbox_controller.ex:show` · `lib/c3/threads.ex:inbox`
-**Costs you:** a debug `curl` of `/v1/inbox` takes the cancellation notice away from the watcher. The cursor itself belongs to [sessions-and-agents](../sessions-and-agents/).
+### A `done` request may have `claimed_by` set without a claim ever happening
+`resolve!` sets `claimed_by_agent_id` and `claimed_at` on open requests that it resolves directly. The changeset allows `claimed_by` on `done` either way. · `lib/c3/threads.ex:resolve!` · `lib/c3/threads/message.ex:validate_claimed_by`
+**Costs you:** you cannot count claims from `claimed_at`. Use the `request.claimed` events.
 
-### Body size is checked twice
-`check_body_size` returns `{:too_large, …}` (`413`) before the changeset runs. The changeset's byte limit would otherwise produce a `422`. A cancel `reason` goes through the same check. · `lib/c3/threads.ex:check_body_size` · `lib/c3/threads/message.ex:max_body_bytes`
+### `release_claims!` does not recompute status on its own
+It is meant for `C3.Sessions.leave/1`. The caller must be inside a transaction and must then call `refresh_threads!/2` with the returned thread ids. It locks threads in sorted id order. · `lib/c3/threads.ex:release_claims!` · `lib/c3/threads.ex:refresh_threads!`
+**Costs you:** skip the refresh and the threads stay `processing` with nobody working on them. Lock them in a different order and Postgres can deadlock against another multi-thread writer.
+
+### Claim expiry needs two conditions
+A claim expires only when the claim is older than `claim_ttl` **and** the holding agent's `last_seen_at` is older than the same cutoff, and only in `open` sessions. Each thread is released in its own transaction. · `lib/c3/threads.ex:expire_claims`
+**Costs you:** an agent that stays alive (its watcher keeps polling) keeps a claim forever, even if it never answers.
+
+### `?since=` is strict "after", in the same ref syntax
+`GET /v1/threads/:id?since=T3.5` (or `5`) returns messages with `number > 5`. A ref of another thread is a 422. · `lib/c3_web/controllers/v1/thread_controller.ex:since` · `lib/c3/threads/queries.ex:filter_since`
+
+### `awaiting=me` filters on *open* requests only
+`list_threads` with `awaiting` ignores requests the agent has already claimed. The inbox includes them. · `lib/c3/threads/queries.ex:filter_awaiting` · `lib/c3/threads/queries.ex:inbox`
+
+### Reading the inbox has a side effect
+`GET /v1/inbox` consumes cancellation notices and alerts through `Sessions.take_notices`, so each one shows once. · `lib/c3_web/controllers/v1/inbox_controller.ex:show`
+**Costs you:** a retried or debugging call to the inbox swallows the "stop working" signal meant for the watcher. Notices are owned by [sessions-and-agents](../sessions-and-agents/) and [watcher-and-plugin](../watcher-and-plugin/).
+
+### Response `status` vs `awaiting`
+The JSON `status` is the cached column. `awaiting`/`processing_by` are derived at read time by a separate query (`lib/c3_web/controllers/v1/thread_controller.ex:summary`). · `lib/c3_web/controllers/v1/thread_json.ex:summary`
+**Costs you:** if the cache ever drifts, the response contradicts itself, for example `answered` with a non-empty `awaiting`.
+
+### `system` messages exist in the schema, but nothing here writes them
+`:system` is a valid `kind`, and it is the only kind with no author. `parse_kind` accepts only `request`/`response`/`note`. · `lib/c3/threads/message.ex:C3.Threads.Message` · `lib/c3/threads/guards.ex:parse_kind`
+`lib/c3_web/controllers/v1/thread_json.ex:message` already handles a nil `author_agent`.
 
 ## Known workarounds in the code
 
-- **Conditional `UPDATE … WHERE request_state = 'open'`** in `lib/c3/threads.ex:claim` and `lib/c3/threads.ex:resolve!`, even though the thread row is already locked. SQLite has no per-row lock, and this guard is what guarantees exactly one winner in a race. The racing tests in `test/c3/threads/writes_test.exs` pin it.
-- **`{1, _} =` match in `lib/c3/threads.ex:cancel`**: it crashes the transaction rather than emit `request.cancelled` for a row that did not change.
-- **A forced finish emits one `request.cancelled` per pending request** (`reason: "thread finished"`) in `lib/c3/threads.ex:finish_thread`. Without it, the agent holding the claim was never told to stop; this was found and fixed in F8.
-- **Tests are not `async`**: with async SQLite sandboxes, the write-lock queue exceeded the timeouts.
+- **The second filter `m.request_state == :open` inside `claim` and `resolve!`.** The rows were already filtered in memory. The conditional `UPDATE` is the actual race arbiter: of two agents claiming the same `any` request, exactly one gets a row back. Do not "simplify" it to `where id in ^ids`. · `lib/c3/threads.ex:claim` · `lib/c3/threads.ex:resolve!`
+- **`{1, _} = …update_all` in `cancel`.** It asserts the request was still pending under the lock. A mismatch crashes rather than cancelling a request that was concurrently answered. · `lib/c3/threads.ex:cancel`
+- **`resolve!` resolves claimed requests only where `claimed_by_agent_id == ^me.id`.** It is a defensive re-check of `held_by_other?`, so a claim taken by someone else between the read and the write is never overwritten. · `lib/c3/threads.ex:resolve!`
+- **Validation outside the transaction** (`check_body_size`, `Attachments.prepare`, `Targets.resolve`). It runs before the thread lock is taken, so bad input never holds the lock. Attachments are wrapped in `Attachments.with_cleanup` so that files written to disk are removed if the transaction rolls back (see [attachments](../attachments/)). · `lib/c3/threads.ex:open_thread`
+- **`session(thread)` builds `%Session{id: …}` without loading it.** `Events.append!` only needs the id. This avoids a query per event. · `lib/c3/threads.ex:session`
 
 ## Coverage
 
 | Test | Pins |
 |---|---|
-| `test/c3/threads/derivation_test.exs` | the rule order of `derive` |
-| `test/c3/threads/writes_test.exs` | open/post/claim/cancel/finish/reopen, both races (`any` claim; named request vs. its answer), leave recomputing status, claim expiry, inbox addressing |
-| `test/c3/threads_test.exs` | changeset and CHECK invariants (`claimed_by` iff claimed, `finished_at` iff finished) |
-| `test/c3_web/controllers/v1/thread_controller_test.exs` | HTTP status mapping of the context errors |
+| `test/c3/threads/writes_test.exs` "racing for an any request: exactly one wins" | the conditional claim `UPDATE` |
+| `test/c3/threads/writes_test.exs` "racing for a named request and its answer: the request ends done once" | claim vs. response race |
+| `test/c3/threads/writes_test.exs` "a new request on an answered thread makes it pending again" | re-derivation on every post |
+| `test/c3/threads/writes_test.exs` "label: is resolved by the first holder that answers" | label targets, first answer wins |
+| `test/c3/threads/writes_test.exs` "the notice reaches whoever could have taken the request, not its canceller" | `request.cancelled` routing |
+| `test/c3/threads/writes_test.exs` "the released claims recompute their threads in the same transaction" | `release_claims!` + `refresh_threads!` contract |
+| `test/c3/threads/writes_test.exs` "a silent agent whose claim is recent keeps it" | both expiry conditions |
+| `test/c3/threads/writes_test.exs` "an invalid title rolls back, thread number included" | no gaps in thread numbers |
+| `test/c3/threads/derivation_test.exs` | the order of the state-machine rules |
+| `test/c3/threads_test.exs` | changeset invariants that mirror the DB `CHECK`s |
+| `test/c3_web/controllers/v1/thread_controller_test.exs` | HTTP mapping, inbox, cancel, `Idempotency-Key` |
 
-Gaps: the Postgres lock-order and deadlock behaviour is not exercised; the suite runs on SQLite only. A `reply_to` that points at a note in a response has no dedicated test.
+Not covered by any test found:
+- A bare response that resolves several requests at once.
+- `release_claims!` lock ordering under concurrent writers (deadlock).
+- A crash when `lock_thread!` receives a missing id.
+- Agreement between `addressed_to` (SQL) and `addressed_to?` (in memory) for label holders after a label change.
 
 ## Prior tickets
 
 | Ticket | What it changed | Watch out |
 |---|---|---|
-| `C3-1` (F3) | Threads, derived status, claims, cancel, `/inbox`; the per-session GenServer from the design was dropped in favour of the row lock | Do not reintroduce process-held state; the status cache relies on same-transaction recompute |
-| `C3-1` (F8) | `admin_finish`; a forced finish now emits `request.cancelled` | Removing those events silently strands claim holders |
+| `C3-1` | Built the whole feature. The designed per-session GenServer was dropped: serialization is the thread row lock, plus SQLite's `:immediate` transactions (`lib/c3/threads.ex:C3.Threads`). | Do not reintroduce an in-memory state process: the status cache relies on being written in the same transaction as the requests. |

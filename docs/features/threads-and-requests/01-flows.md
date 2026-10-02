@@ -2,139 +2,127 @@
 doc: features/threads-and-requests/01-flows
 repo: c3
 kind: feature-flows
-anchored_to: fcd0bd9
+anchored_to: fa64fbd
 generated: 2026-10-02
 ---
 # Threads and Requests — flows
 
-This feature has nine flows. Six are agent writes over `/v1`: open, post, claim, cancel, finish and reopen. Two are agent reads: the thread list or detail, and the inbox. The last is a background claim expiry run by the sweeper. Every write runs in one transaction. It locks the thread row through `lib/c3/threads.ex:lock_thread!`, does its work, then recomputes the cached `threads.status` through `lib/c3/threads.ex:apply_state!`. That is how the status in the database always matches what `lib/c3/threads/derivation.ex:derive` says. The flows differ in what they change on the request rows (`request_state` on `lib/c3/threads/message.ex:request_state`) and in who may do it.
+This feature has eight flows. Six of them are agent writes over HTTP, and each one runs as a single transaction that locks the thread's row first: open, post, claim, cancel, finish and reopen. There are also two agent reads, the thread list/detail and the inbox. Two more paths are not agent calls, the claim release on leave/kick and the claim TTL sweep, and they are described at the end. Every write ends in `lib/c3/threads.ex:apply_state!`. That function rederives `threads.status` from the requests using `lib/c3/threads/derivation.ex:derive` and emits `thread.status_changed` when the status moved. Every rule of the state machine lives there, and the stored status is only a cache of it. The MCP tools in `lib/c3_web/mcp/tools.ex` call the same `C3.Threads` functions. See the `mcp-server` feature.
 
-## Flow: Open a thread with a request
+## Flow: Open a thread with a first request
 
-**Entry:** `POST /v1/sessions/:code/threads` → `lib/c3_web/controllers/v1/thread_controller.ex:create`
+**Entry:** `POST /v1/sessions/:code/threads`
 
-1. **Trigger** — An agent sends `title`, `body`, `to` and optionally `attachments` · `lib/c3_web/controllers/v1/thread_controller.ex:create`
-2. **Guard** — The body must fit `lib/c3/threads/message.ex:max_body_bytes` (`lib/c3/threads.ex:check_body_size`). `to` is resolved by `lib/c3/threads/targets.ex:resolve`: an omitted `to` means `any`, repeated targets are dropped, and a named agent must be `:active` and must not be the author (`lib/c3/threads/targets.ex:check`). A label needs no current holder. Agent auth and the session-match check on `:code` happen upstream (see `sessions-and-agents`).
-3. **Logic** — Each target becomes its own request message, numbered from 1 (`lib/c3/threads.ex:insert_requests!`). `T<n>` is taken from `sessions.next_thread_number` (`lib/c3/threads.ex:next_thread_number!`).
-4. **Persist / call** — Inserts the thread and its requests. Attachments are stored on every request (see `attachments`) · `lib/c3/threads.ex:open_thread`
-5. **Notify** — Emits `thread_opened`, then `thread_status_changed` from `nil` to `pending` (see `event-feed`) · `lib/c3/threads.ex:apply_state!`
-6. **Respond / render** — Returns `201` with the thread, its derived state and its messages · `lib/c3_web/controllers/v1/thread_json.ex:show`
+1. **Trigger**: the agent sends `title`, `body`, an optional `to` and optional `attachments` · `lib/c3_web/controllers/v1/thread_controller.ex:create`
+2. **Guard**: the token must belong to `:code` (`lib/c3_web/plugs/agent_auth.ex`; see `sessions-and-agents`). Before the transaction starts, the body size is checked (`lib/c3/threads/guards.ex:check_body_size`) and the targets are resolved (`lib/c3/threads/targets.ex:resolve`). A target can be a name `AGn`, `label:<x>` or `any`, and an omitted `to` means `any`. A named agent must exist and be `:active`, and an agent cannot address itself. A label does not need a current holder.
+3. **Logic**: the thread number comes from incrementing `sessions.next_thread_number` (`lib/c3/threads.ex:next_thread_number!`). Each target becomes **one request message**, numbered from 1 (`lib/c3/threads.ex:insert_requests!`). A list of targets with repeats is deduplicated.
+4. **Persist**: the thread row and the request rows are inserted, and the attachment files are stored once per request (`Attachments.store!`; see `attachments`).
+5. **Notify**: `thread.opened` is emitted with every target and request ref, and then `apply_state!` sets the status to `pending` (`lib/c3/threads.ex:open_thread`).
+6. **Respond**: `201` with the thread, its derived state and all messages (`lib/c3_web/controllers/v1/thread_controller.ex:render_thread`).
 
-**Touch this flow when:** you add a target kind, change the addressing rules, or add a thread-level field.
-**Breaks when:** `to` names an agent that left the session ("is no longer in the session") or names the author; `to: []` is `invalid` and does not fall back to `any`.
+**Touch this flow when:** adding a new target kind, changing how threads are numbered, or adding a field to the thread.
+**Breaks when:** a named target has left the session (`"AGn is no longer in the session"`), or `to: []` is sent (`"to names no target"`). Neither of these is a 404: both come back as `:invalid`.
 
 ## Flow: Post a request, response or note
 
-**Entry:** `POST /v1/threads/:id/messages` → `lib/c3_web/controllers/v1/thread_controller.ex:post_message`
+**Entry:** `POST /v1/threads/:id/messages` (`:id` is `T3`)
 
-1. **Trigger** — An agent sends `kind`, `body`, and optionally `to`, `reply_to` (`T3.2` or `2`) and `attachments` · `lib/c3_web/controllers/v1/thread_controller.ex:post_message`
-2. **Guard** — `kind` must be in `lib/c3/threads.ex:@kinds`. `to` is only accepted on a request (`lib/c3/threads.ex:targets_for`). A finished thread is a `409` "reopen it first" (`lib/c3/threads.ex:rollback_finished`). A `reply_to` pointing into another thread is `invalid` (`lib/c3/threads.ex:parse_message_ref`).
-3. **Logic** — A `response` resolves requests (`lib/c3/threads.ex:resolvable!`):
-   - With `reply_to` on a request, it must be one the author may act on (`lib/c3/threads.ex:actionable!`).
-   - With `reply_to` on a non-request, it resolves nothing.
-   - Without `reply_to`, it resolves every pending request addressed to the author that nobody else holds. If exactly one was resolved, that one becomes the implicit `reply_to` (`lib/c3/threads.ex:single`).
-4. **Persist / call** — An open request is set to `done` and claimed by the responder in the same step. A request the author already claimed goes to `done` (`lib/c3/threads.ex:resolve!`). `last_message_at` is bumped.
-5. **Notify** — Emits one `message_posted` per inserted message. It carries `resolved` and `resolved_for`, the requesters' names, so their watcher wakes up (`lib/c3/threads.ex:requesters`). Then `thread_status_changed` if the status moved.
-6. **Respond / render** — Returns `201` with the thread summary, the new messages and the `resolved` refs · `lib/c3_web/controllers/v1/thread_json.ex:posted`
+1. **Trigger**: the agent sends `kind`, `body` and, optionally, `to`, `reply_to` and `attachments` · `lib/c3_web/controllers/v1/thread_controller.ex:post_message`
+2. **Guard**: `lib/c3/threads/guards.ex:parse_kind` and `check_body_size` run first. `to` is accepted on requests only (`lib/c3/threads/guards.ex:targets_for`). Inside the transaction, the thread is locked (`lib/c3/threads.ex:lock_thread!`). A finished thread is a `409` that says "reopen it first" (`lib/c3/threads/guards.ex:rollback_finished`). `reply_to` must be a message of this same thread (`lib/c3/threads/refs.ex:parse_message_ref`).
+3. **Logic**:
+   - A `request` adds one request per target (`insert_requests!`).
+   - A `response` resolves the requests returned by `lib/c3/threads/guards.ex:resolvable!`. With `reply_to`, that is exactly that request, and it must be pending, addressed to the author and not held by someone else. Without `reply_to`, it is **every** pending request of the thread addressed to the author that nobody else holds. If `reply_to` points at a non-request, the response resolves nothing and no error is returned.
+   - A `note` changes no state.
+4. **Persist**: `lib/c3/threads.ex:resolve!` moves open requests straight to `done`, claiming them for the responder in the same update. Requests the responder already claimed also become `done`. `last_message_at` is bumped.
+5. **Notify**: one `message.posted` is emitted per inserted message. It carries `resolved` and `resolved_for`, the names of the requesters returned by `lib/c3/threads.ex:requesters`. This field is how the watcher wakes the asker (see `watcher-and-plugin`). `apply_state!` runs after that.
+6. **Respond**: `201` `:posted` with the thread summary, the messages and the resolved refs.
 
-**Touch this flow when:** a ticket is about "my answer didn't close the request", a new message kind, or threading through `reply_to`.
-**Breaks when:** a response to a request held by another agent gets a `409` naming the holder. A response with no `reply_to` and nothing resolvable still posts, but resolves nothing, and the thread stays `pending`. That failure is silent.
+**Touch this flow when:** changing what a response resolves, adding a message kind, or changing what the watcher learns from an answer.
+**Breaks when:** a response without `reply_to` lands where nothing is addressed to the author. It still posts with `resolved: []` and returns no error, so a wrong target looks like a successful answer. Message numbers come from `max(number)+1` (`next_message_number!`). Only the thread lock keeps that safe, so any write that skips `lock_thread!` will collide on the `[:thread_id, :number]` unique constraint.
 
 ## Flow: Claim a request
 
-**Entry:** `POST /v1/threads/:id/claim` → `lib/c3_web/controllers/v1/thread_controller.ex:claim`
+**Entry:** `POST /v1/threads/:id/claim` (optional `request_id`)
 
-1. **Trigger** — Optional `request_id`. Without it, the claim covers every pending request addressed to the caller (`lib/c3/threads.ex:addressed_requests`) · `lib/c3/threads.ex:claim`
-2. **Guard** — The thread must not be finished. A named request must be a request, still pending, and addressed to the caller (`lib/c3/threads.ex:addressed_to?`). For `any`, that means the caller is not its author.
-3. **Logic** — Requests the caller already holds count as success (a no-op). The rest are claimed with a conditional `UPDATE … WHERE request_state = 'open'`, so of two racers exactly one wins.
-4. **Persist / call** — Sets `request_state: :claimed`, `claimed_by_agent_id` and `claimed_at`. If nothing is held and nothing is claimed, the transaction rolls back with a `409` and `claimed_by` holders.
-5. **Notify** — Emits `request_claimed` per claimed request, then `thread_status_changed` (for example `pending` → `processing`).
-6. **Respond / render** — Returns the summary plus `claimed` refs · `lib/c3_web/controllers/v1/thread_json.ex:action`
+1. **Trigger** · `lib/c3_web/controllers/v1/thread_controller.ex:claim`
+2. **Guard**: the thread is locked and must not be finished. With `request_id`, the request goes through `lib/c3/threads/guards.ex:claimable_request!` and then `actionable!`. Without it, the candidates are every pending request addressed to the agent (`lib/c3/threads/queries.ex:addressed_requests`).
+3. **Logic**: requests the agent already holds are a no-op and still count as success. Requests that are still open are claimed with a conditional `UPDATE … WHERE request_state = 'open'` (`lib/c3/threads.ex:claim`). This conditional update is what makes a race between two agents yield exactly one winner.
+4. **Persist**: the claimed rows get `request_state: :claimed`, `claimed_by_agent_id` and `claimed_at`.
+5. **Notify**: one `request.claimed` is emitted per newly claimed request, followed by `apply_state!`. The status goes to `processing` only when no request remains open. See `lib/c3/threads/derivation.ex:derive`, where `pending` outranks `processing`.
+6. **Respond**: `:action` with `claimed` set to the held and new refs. If nothing was held or claimed, the response is a `409` whose `claimed_by` maps each request ref to its holder.
 
-**Touch this flow when:** two agents double-work a request, or `any` requests show up as unclaimable.
-**Breaks when:** the caller has no matching `label`, since label requests match only the caller's label (`lib/c3/threads.ex:addressed_to`). Also when the request was already resolved, which returns `409 already done`.
+**Touch this flow when:** changing claim semantics, the conflict payload, or what makes a request actionable.
+**Breaks when:** the request is addressed to someone else (`403`), or it is already `done`/`cancelled` (`409`).
 
 ## Flow: Cancel a request
 
-**Entry:** `POST /v1/threads/:id/cancel` → `lib/c3_web/controllers/v1/thread_controller.ex:cancel`
+**Entry:** `POST /v1/threads/:id/cancel` (`request_id` required, `reason` optional)
 
-1. **Trigger** — `request_id` (required) and optionally `reason` · `lib/c3/threads.ex:cancel`
-2. **Guard** — Only the request's author or the thread's opener can cancel (`lib/c3/threads.ex:cancellable_request!`). The request must still be `open` or `claimed`; if not, it is a `409`, because the answer won the race. Unlike the other writes, cancel does **not** reject a finished thread. A finished thread has no pending requests anyway.
-3. **Logic** — A blank `reason` becomes `nil` (`lib/c3/threads.ex:blank_to_nil`). A non-blank reason must be a string within the body size.
-4. **Persist / call** — Sets `request_state: :cancelled`, clears the claim and sets `resolved_at`. A non-blank reason is also posted as a `note` replying to the request.
-5. **Notify** — Emits `request_cancelled` with `claimed_by`. That is how the agent working on the request learns to stop: it surfaces in that agent's inbox `cancelled` list. A `message_posted` follows for the note, then `thread_status_changed`.
-6. **Respond / render** — Returns the summary plus `cancelled` and `note` refs · `lib/c3_web/controllers/v1/thread_json.ex:action`
+1. **Trigger** · `lib/c3_web/controllers/v1/thread_controller.ex:cancel`
+2. **Guard**: `lib/c3/threads/guards.ex:require_request_id` and `check_reason` run first. `cancellable_request!` then allows only the request's author or the thread opener, and only while the request is `open`/`claimed`. **The finished check is missing here**, unlike the post and claim paths. It does no harm because finishing a thread already cancels everything pending.
+3. **Logic / persist**: the request is set to `cancelled`, the claim is cleared, and `resolved_at` is set (`lib/c3/threads.ex:cancel`).
+4. **Notify**: `request.cancelled` is emitted with `to`, `claimed_by` and `reason`. If a reason was given, it is also inserted as a `note` replying to the request, with its own `message.posted`.
+5. **Respond**: `:action` with `cancelled` and `note` (a ref or `nil`).
 
-**Touch this flow when:** a ticket is about stopping in-flight work or about who may withdraw a request.
-**Breaks when:** the target agent is not the requester or the opener, which returns `403`. A missing `request_id` is `invalid`: cancel has no "all" default, unlike claim.
+**Touch this flow when:** changing who may cancel, or what the worker that held the claim learns.
+**Breaks when:** the answer committed first. The cancel then returns `409 "… is already done"`, which is the intended outcome of that race.
 
-## Flow: Finish and reopen a thread
+## Flow: Finish or reopen a thread
 
-**Entry:** `POST /v1/threads/:id/finish`, `POST /v1/threads/:id/reopen` → `lib/c3_web/controllers/v1/thread_controller.ex:finish`, `lib/c3_web/controllers/v1/thread_controller.ex:reopen`
+**Entry:** `POST /v1/threads/:id/finish` (`force`) · `POST /v1/threads/:id/reopen`
 
-1. **Trigger** — `force` is optional, and both `true` and `"true"` count · `lib/c3/threads.ex:finish`
-2. **Guard** — Only the opener can finish or reopen (`lib/c3/threads.ex:check_opened_by!`). `lib/c3/threads.ex:admin_finish` skips that check and is always forced (see `admin-ui`).
-3. **Logic** — With pending requests and no `force`, the call is a `409` listing them. Finishing a finished thread, or reopening one that is not finished, returns `changed: false`.
-4. **Persist / call** — A forced finish cancels every pending request. `apply_state!` writes `finished_at` and `status` together, because a CHECK ties them (`lib/c3/threads/thread.ex:changeset`). Reopen clears `finished_at`. The status is then derived again, and it is always `answered`, because finishing left nothing pending.
-5. **Notify** — A forced finish emits one `request_cancelled` per pending request with `reason: "thread finished"`. `cancelled_by` is `"admin"` when the admin finishes. A `thread_status_changed` follows, carrying `cancelled`.
-6. **Respond / render** — Returns `finished` or `reopened` plus `cancelled` · `lib/c3_web/controllers/v1/thread_json.ex:action`
+1. **Trigger** · `lib/c3_web/controllers/v1/thread_controller.ex:finish`, `lib/c3_web/controllers/v1/thread_controller.ex:reopen`
+2. **Guard**: only the opener may do either (`lib/c3/threads/guards.ex:check_opened_by!`). The admin path `lib/c3/threads.ex:admin_finish`, called from `lib/c3/admin.ex:finish_thread`, skips that check and always forces (see `admin-ui`).
+3. **Logic**: if requests are still pending and `force` is not `true`/`"true"`, the call returns a `409` that lists them under `pending` (`lib/c3/threads.ex:finish_thread`). With `force`, every pending request is cancelled. Finishing a thread that is already finished, or reopening one that is not, is a no-op and returns `changed: false`.
+4. **Persist**: `apply_state!` writes `finished_at`, and `nil` on reopen. The DB check `threads_finished_at_check` ties that column to `status = finished` (`lib/c3/threads/thread.ex:changeset`).
+5. **Notify**: one `request.cancelled` per forced cancel, with `reason: "thread finished"` and `cancelled_by` set to the agent's name or `"admin"`. `thread.status_changed` carries the `cancelled` list as an extra field.
+6. **Respond**: `:action` with `finished`/`cancelled`, or `reopened`. A reopened thread always derives to `answered`.
 
-**Touch this flow when:** lifecycle rules change for a thread, but not for a session (see `session-lifecycle`).
-**Breaks when:** you post or claim on a finished thread. Both return `409` until it is reopened.
+**Touch this flow when:** changing thread closure rules, or adding admin moderation.
+**Breaks when:** `finished_at` is written without going through `apply_state!`. The DB check then rejects the write.
 
 ## Flow: List and read threads
 
-**Entry:** `GET /v1/sessions/:code/threads`, `GET /v1/threads/:id` → `lib/c3_web/controllers/v1/thread_controller.ex:index`, `lib/c3_web/controllers/v1/thread_controller.ex:show`
+**Entry:** `GET /v1/sessions/:code/threads?status=&awaiting=me` · `GET /v1/threads/:id?since=`
 
-1. **Trigger** — `index` accepts `status` and `awaiting=me`. `show` accepts `since`, a message ref.
-2. **Guard** — `status` must be one of `lib/c3_web/controllers/v1/thread_controller.ex:@statuses`. `awaiting` only accepts `me`. A thread is looked up by `T<n>` **within the token's session** (`lib/c3/threads.ex:fetch_thread`). A thread from another session comes back as `thread_not_found`, never a `403`.
-3. **Logic** — `awaiting=me` keeps only the threads with an **open** request addressed to the caller. Requests the caller already claimed are excluded (`lib/c3/threads.ex:filter_awaiting`). Threads are ordered by `last_message_at` descending.
-4. **Persist / call** — No writes. The state is derived from the request rows in one query for all threads (`lib/c3/threads.ex:states`).
-5. **Respond / render** — `lib/c3_web/controllers/v1/thread_json.ex:index` and `lib/c3_web/controllers/v1/thread_json.ex:show`. Request fields appear only on requests (`lib/c3_web/controllers/v1/thread_json.ex:message`).
+1. **Trigger** · `lib/c3_web/controllers/v1/thread_controller.ex:index`, `lib/c3_web/controllers/v1/thread_controller.ex:show`
+2. **Guard**: `status` must be one of `pending processing answered finished`, and `awaiting` accepts only `me` (`lib/c3_web/controllers/v1/thread_controller.ex:list_opts`). Thread refs are looked up only inside the token's session. An unknown ref or a ref from another session returns `:thread_not_found` (`lib/c3/threads/queries.ex:fetch_thread`).
+3. **Logic**: `status` filters on the cached column. `awaiting=me` keeps threads with an **open** request addressed to the agent, so claimed requests do not count (`lib/c3/threads/queries.ex:list_threads`). Threads are ordered by `last_message_at desc`. `since` keeps only the messages numbered after it (`lib/c3/threads/queries.ex:list_messages`).
+4. **Respond**: `awaiting`/`processing_by` are recomputed live with `lib/c3/threads/queries.ex:states` instead of being read from the cache. They are rendered by `lib/c3_web/controllers/v1/thread_json.ex`.
 
-**Touch this flow when:** you add a filter or change the thread JSON shape. The MCP tools and the plugin also read this shape (see `mcp-server`, `watcher-and-plugin`).
-**Breaks when:** `since` names another thread's message, which returns `invalid`.
+**Touch this flow when:** adding a list filter or a field to the thread JSON.
+**Breaks when:** the cached status drifts, for example because a write bypassed `apply_state!`. `?status=` then disagrees with the `status` shown in the body.
 
-## Flow: Read the inbox
+## Flow: Read the inbox (what do I have to do)
 
-**Entry:** `GET /v1/inbox` → `lib/c3_web/controllers/v1/inbox_controller.ex:show`
+**Entry:** `GET /v1/inbox`
 
-1. **Trigger** — The watcher, or an agent, polls the inbox · `lib/c3_web/controllers/v1/inbox_controller.ex:show`
-2. **Logic** — The inbox has three parts:
-   - Requests that are open and addressed to the caller, by name, by label, or as `any` from someone else, plus the requests the caller has claimed. They are grouped by thread in thread order (`lib/c3/threads.ex:inbox`).
-   - Cancellations and alerts from `Sessions.take_notices`, split on `:request_cancelled` (see `sessions-and-agents`).
-3. **Persist / call** — Reading **consumes** the notices, so each cancellation or alert shows once. The requests are not consumed and keep showing until resolved.
-4. **Respond / render** — `you`, `empty`, `threads[].requests` (with `from`; `kind`, `author` and `resolved_at` dropped), `cancelled` and `alerts` · `lib/c3_web/controllers/v1/inbox_json.ex:show`
+1. **Trigger**: the watcher polls this endpoint · `lib/c3_web/controllers/v1/inbox_controller.ex:show`
+2. **Logic**: the inbox holds the open requests addressed to the agent and the ones it has claimed, grouped by thread (`lib/c3/threads/queries.ex:inbox`). A request counts as addressed to the agent when it names the agent, matches the agent's label, or is addressed to `any` by someone else (`lib/c3/threads/queries.ex:addressed_to`).
+3. **Persist**: **reading has a side effect.** `Sessions.take_notices` advances `alerts_seen_seq`, so each cancellation or security alert is returned **once only** (see `join-security`, `event-feed`).
+4. **Respond**: `threads`, `cancelled`, `alerts`, and `empty` when all three are empty (`lib/c3_web/controllers/v1/inbox_json.ex:show`).
 
-**Touch this flow when:** the watcher wakes for the wrong thing or misses a request.
-**Breaks when:** two clients share one token and both poll. Only the first read sees a given cancellation.
+**Touch this flow when:** changing what wakes an agent, or the addressing rules. In the second case, keep `lib/c3/threads/queries.ex:addressed_to` and `lib/c3/threads/guards.ex:addressed_to?` in agreement: one is the SQL version of the rule and the other is the in-memory version.
+**Breaks when:** two clients read the same agent's inbox. Whichever reads first consumes the cancellations, and the other never sees them.
 
-## Flow: Expire stale claims
+## Flow: Claims released on leave / expired by the sweeper
 
-**Entry:** `C3.Sweeper` → `lib/c3/threads.ex:expire_claims`
+**Entry:** the call made by `C3.Sessions` when an agent leaves or is kicked · the periodic run of `lib/c3/sweeper.ex`
 
-1. **Trigger** — The sweeper calls the function periodically (see `session-lifecycle`).
-2. **Guard** — A claim expires only when all three hold: the session is `:open`, `claimed_at` is older than `claim_ttl`, and the holder's `last_seen_at` is older than `claim_ttl`. An old claim held by a live agent is kept.
-3. **Persist / call** — Sets the request back to `open` and clears the claim, in one transaction per thread.
-4. **Notify** — Emits `request_claim_expired` per request, then `thread_status_changed`, typically `processing` → `pending`.
+1. **Leave/kick**: `lib/c3/threads.ex:release_claims!` puts the agent's claims back to `open`, locking the threads in sorted id order. The caller then runs `refresh_threads!` in the same transaction (`lib/c3/sessions.ex`). **No per-request event is emitted.** The released refs go back to the caller.
+2. **TTL**: `lib/c3/threads.ex:expire_claims` reopens a claim only when the claim is older than `claim_ttl` **and** the holder's `last_seen_at` is older than `claim_ttl`, inside an open session. Each released request emits `request.claim_expired`.
 
-A sibling path, `lib/c3/threads.ex:release_claims!` together with `lib/c3/threads.ex:refresh_threads!`, does the same thing on `leave` without an event per request. Its caller must open the transaction.
-
-**Touch this flow when:** requests get stuck in `processing` after an agent dies.
-**Breaks when:** you call `release_claims!` outside a transaction. The thread locks and the status refresh are then not atomic.
+**Touch this flow when:** changing liveness or claim timeouts (see `session-lifecycle`).
+**Breaks when:** the holder keeps polling. A live agent that never answers keeps its claim indefinitely, because the TTL depends on `last_seen_at` and not only on the claim's age.
 
 ## Shared state
 
 | State | Owner |
 |---|---|
-| Event log (`Events.append!`), the source of `/v1/events` and the watcher | `event-feed` |
-| `sessions.next_thread_number`, `agents.label`, `agents.status`, `agents.last_seen_at`, `Sessions.take_notices` | `sessions-and-agents` |
-| Attachment preparation, storage and cleanup around each write | `attachments` |
-| `claim_ttl`, `max_body_bytes` (`C3.Config`) | configuration |
-| Admin forced finish | `admin-ui` |
-
-## Notes
-
-- The private design spec described a per-session GenServer that serialized writes. It was dropped. Writes are now serialized by the thread-row lock: `lib/c3/threads.ex:lock_thread!` bumps `lock_version`, and SQLite also serializes all writers. Code that writes request rows outside these functions must take the lock and call `apply_state!`, or the cached `status` drifts.
-- `awaiting` and `processing_by` are computed even when the status is `pending`, so a pending thread can also have claimed requests in progress (`lib/c3/threads/derivation.ex:derive`).
-- A `done` request may or may not have a `claimed_by_agent_id`. The changeset allows both (`lib/c3/threads/message.ex:validate_claimed_by`). In practice `resolve!` always sets it to the responder.
+| `current_agent` / `current_session`, token-to-`:code` match | `sessions-and-agents` (`lib/c3_web/plugs/agent_auth.ex`) |
+| Agent `status`, `label` and `last_seen_at`, read by targeting and claim expiry | `sessions-and-agents` |
+| `sessions.next_thread_number` counter | `sessions-and-agents` |
+| Event log written via `Events.append!` (`thread.*`, `message.posted`, `request.*`) | `event-feed` |
+| `agents.alerts_seen_seq`, advanced by the inbox read | `join-security` / `event-feed` |
+| Files attached to requests and messages | `attachments` |
+| `claim_ttl`, `max_body_bytes` in `C3.Config` | configuration document |

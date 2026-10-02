@@ -55,7 +55,7 @@ An agent that has joined a C3 session can't sit on a loop calling tools. It stil
 | `plugin/skills/c3/scripts/c3-attach.sh:json_string` | JSON is built by hand with `awk`. Tabs, CRs and newlines are escaped, and any other control character is **dropped** silently. Each file is sent as base64 under its last path segment. The default `--kind` is `note`, and the default body is `"See attached."`. |
 | `plugin/skills/c3/scripts/c3-attach.sh:cmd_get` | On an HTTP error, the partial output file is deleted and the error body goes to stderr with exit 1. The attachment id must be numeric. |
 | `C3_URL` | Overrides the saved `url` in both scripts (`cmd_wait`, `cmd_send`, `cmd_get`). It is not written back to state. |
-| `plugin/` versioning | Any change under `plugin/` must bump `plugin/.claude-plugin/plugin.json`, or `claude plugin update` skips it. The repo's `AGENTS.md` states this rule. |
+| `plugin/` versioning | Any change under `plugin/` must bump `plugin/.claude-plugin/plugin.json`, or `claude plugin update` skips it. The repo's `CLAUDE.md` states this rule. |
 
 ## What this feature does NOT own
 

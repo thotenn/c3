@@ -7,6 +7,23 @@ generated: 2026-10-02
 
 Newest first.
 
+## 2026-10-02 — refresh after splitting `C3.Threads`
+
+**Scope:** `threads-and-requests`, `arch-build`, orientation (`general-context/`) · **Anchored to:**
+`c3@fa64fbd` (`main`)
+**How:** `sk-ctx-update` through sk-context, `claude/opus`, only the jobs the diff invalidated.
+
+`lib/c3/threads.ex` was split into `C3.Threads.Refs`, `C3.Threads.Queries` and
+`C3.Threads.Guards` with no behaviour change; the public API stays on `C3.Threads` through
+`defdelegate`. The three new files were added to the `threads-and-requests` partition and its
+citations re-pointed.
+
+**Known gaps:**
+- Everything listed under the first generation still applies; only the re-run documents were
+  re-read.
+- Documents outside the re-run set that cite `lib/c3/threads.ex` by line were not re-checked
+  beyond the citation gate.
+
 ## 2026-10-02 — first generation of the context tree
 
 **Scope:** `docs/general-context/`, `docs/architecture/`, `docs/features/`, `00-INDEX.md`,

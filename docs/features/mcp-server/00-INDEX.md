@@ -54,7 +54,7 @@ The routes and the `:mcp` pipeline (origin check, real IP, per-IP rate limit) ar
 - **The per-IP rate limit is counted once.** It is spent on `/mcp`. The inner request carries `private.c3_mcp` and the client IP that `/mcp` resolved, so it skips the per-IP limit. The per-token limit still applies.
 - **`tools/list` and `server/discover` advertise a one-hour public cache** (`lib/c3_web/mcp/server.ex:@cache`). If you change a tool, clients may keep seeing the old list until it expires.
 - **The text in `lib/c3_web/mcp/server.ex:@instructions` is what MCP clients show to the model.** Edit it with care.
-- **Plugin version:** if a tool change requires a change under `plugin/`, also bump `plugin/.claude-plugin/plugin.json` (see the repository `AGENTS.md`).
+- **Plugin version:** if a tool change requires a change under `plugin/`, also bump `plugin/.claude-plugin/plugin.json` (see the repository `CLAUDE.md`).
 
 ## What this feature does NOT own
 

@@ -2,68 +2,93 @@
 doc: features/threads-and-requests/02-files
 repo: c3
 kind: feature-files
-anchored_to: fcd0bd9
+anchored_to: fa64fbd
 generated: 2026-10-02
 ---
 # Threads and Requests — files
 
-Almost all the logic lives in one context module, `lib/c3/threads.ex`. That module holds every read, every write, the claim/cancel/finish rules and the addressing query. The schemas are thin, and the controllers only translate HTTP. Two things surprise people. First, there is no per-session process: every write is a transaction that starts with `lib/c3/threads.ex:lock_thread!`, an `UPDATE` that bumps `lock_version`. Second, `threads.status` is a cache. Only `lib/c3/threads.ex:apply_state!` writes it, by re-running the pure `lib/c3/threads/derivation.ex:derive` inside that same transaction. The design spec planned a per-session GenServer, but it was not built. The MCP tools do not call this context directly. `lib/c3_web/mcp/dispatch.ex` replays them through `C3Web.Router`, so a change in `lib/c3_web/controllers/v1/thread_controller.ex` or `lib/c3_web/controllers/v1/thread_json.ex` also changes what MCP clients see.
+This feature has one public context module, `lib/c3/threads.ex:C3.Threads`, and five helper modules behind it under `lib/c3/threads/`. Callers outside the context should only use `C3.Threads`. It covers reads by `defdelegate` to `lib/c3/threads/queries.ex:C3.Threads.Queries` and ref parsing by `defdelegate` to `lib/c3/threads/refs.ex:C3.Threads.Refs`. `lib/c3/threads/guards.ex:C3.Threads.Guards` says in its own moduledoc that it is "Internal to `C3.Threads`". All the writes (open, post, claim, cancel, finish, reopen, and claim release/expiry) are still in `threads.ex`. That is the one place where state changes happen.
 
-**Owned globs:** `lib/c3/threads.ex`, `lib/c3/threads/thread.ex`, `lib/c3/threads/message.ex`, `lib/c3/threads/derivation.ex`, `lib/c3/threads/targets.ex`, `lib/c3_web/controllers/v1/thread_controller.ex`, `lib/c3_web/controllers/v1/thread_json.ex`, `lib/c3_web/controllers/v1/inbox_controller.ex`, `lib/c3_web/controllers/v1/inbox_json.ex`
+Two things surprise people:
+
+- **There is no session process.** A per-session GenServer was planned in the design, but it was dropped. The code serializes writers instead: every write opens a transaction whose first step is `lib/c3/threads.ex:lock_thread!`, an `UPDATE` that bumps `lock_version`. Inside that transaction, `lib/c3/threads.ex:apply_state!` recomputes `threads.status`. The column is a cache of `lib/c3/threads/derivation.ex:derive`.
+- **The MCP server does not call `C3.Threads`.** `lib/c3_web/mcp/dispatch.ex` builds a conn and runs it through `Router.call`. Every MCP thread tool therefore goes through `lib/c3_web/controllers/v1/thread_controller.ex` and `lib/c3_web/controllers/v1/inbox_controller.ex`. If you change a controller or a JSON view, the MCP tool changes too. `test/c3_web/mcp/parity_test.exs` checks that the two stay in sync.
+
+**Owned globs:** `lib/c3/threads.ex`, `lib/c3/threads/{thread,message,derivation,targets,refs,queries,guards}.ex`, `lib/c3_web/controllers/v1/thread_controller.ex`, `lib/c3_web/controllers/v1/thread_json.ex`, `lib/c3_web/controllers/v1/inbox_controller.ex`, `lib/c3_web/controllers/v1/inbox_json.ex`
 
 ## Contexts
 
 | Path | Export | Kind | Responsibility | Touch when |
 |---|---|---|---|---|
-| `lib/c3/threads.ex` | `C3.Threads.post_message/3` | context | inserts a request/response/note; a response resolves its `reply_to`, or with no `reply_to` every request the author may answer, claiming it on the way | changing what a response closes, adding a message kind, changing the `message.posted` payload (`resolved_for` is what wakes the requester's watcher) |
-| `lib/c3/threads.ex` | `C3.Threads.claim/3` | context | conditional `UPDATE … WHERE request_state = 'open'`; already holding the request is a no-op, someone else holding it is a conflict that names them | changing race/conflict behaviour of claims, the `409` body (`claimed_by`) |
-| `lib/c3/threads.ex` | `C3.Threads.cancel/3` | context | cancels one pending request (only its author or the thread opener can); an optional `reason` becomes a `note` replying to it | changing who may cancel, what the cancelled agent is told (`request.cancelled` payload) |
-| `lib/c3/threads.ex` | `C3.Threads.finish/3`, `C3.Threads.admin_finish/1`, `C3.Threads.reopen/2` | context | finish fails with a conflict while requests are pending unless `force`, which cancels them; admin finishing is always forced with `cancelled_by: "admin"`; reopen re-derives the status | changing finish/force semantics, opener-only rules (`check_opened_by!`) |
-| `lib/c3/threads.ex` | `C3.Threads.open_thread/2` | context | allocates `T<n>` from `sessions.next_thread_number`, inserts one request per target, emits `thread.opened` | changing what opening a thread creates or emits |
-| `lib/c3/threads.ex` | `C3.Threads.inbox/1` | context | open requests addressed to the agent plus the ones it holds, grouped by thread | changing what counts as "to do" for an agent |
-| `lib/c3/threads.ex` | `addressed_to` / `addressed_to?` | context | addressing rule, written twice: once as a query `dynamic` (inbox, `awaiting=me`, claim-all) and once in memory (single-request checks). Either way it means named agent, the agent's label, or `any` when not the author | changing addressing. **Edit both functions**, or the inbox and the claim/answer checks will disagree |
-| `lib/c3/threads.ex` | `C3.Threads.apply_state!` (private), `C3.Threads.states/1`, `C3.Threads.state/1` | context | re-derives and writes the cached `status`/`finished_at`; emits `thread.status_changed` only when the status moved | any new write path. It must call `apply_state!` before committing, or the cache drifts |
-| `lib/c3/threads.ex` | `C3.Threads.release_claims!/1`, `C3.Threads.refresh_threads!/2` | context | puts a leaving agent's claims back to `open`; the caller must run `refresh_threads!` in the same transaction | changing what leaving or being kicked does to held work (called from `lib/c3/sessions.ex`) |
-| `lib/c3/threads.ex` | `C3.Threads.expire_claims/1` | context | reopens claims whose agent has been silent longer than `claim_ttl` (only in open sessions), with `request.claim_expired` | changing the claim TTL rule (run by `lib/c3/sweeper.ex`) |
-| `lib/c3/threads.ex` | `C3.Threads.parse_thread_ref/1`, `C3.Threads.parse_message_ref/2`, `C3.Threads.thread_ref/1`, `C3.Threads.message_ref/2` | util | `T3` / `T3.5` / `5` parsing and formatting; a ref that points into another thread is rejected as invalid | changing id formats, which every JSON payload and event exposes |
-| `lib/c3/threads/derivation.ex` | `C3.Threads.Derivation.derive/2` | service | pure state machine: `finished` › `pending` (any open) › `processing` (any claimed) › `answered`; `awaiting` and `processing_by` are always computed | changing thread status rules. A `pending` thread can also have a non-empty `processing_by` |
-| `lib/c3/threads/targets.ex` | `C3.Threads.Targets.resolve/2`, `C3.Threads.Targets.display/3` | service | parses `to` (name, list, `label:<x>`, `any`; omitted means `any`) into one target per request; a named agent must be active and not the author, a label needs no current holder | adding a target kind, changing the "cannot address yourself" or inactive-agent errors |
+| `lib/c3/threads.ex` | `C3.Threads.open_thread` | context | Creates the thread plus one request per target (shared attachments), emits `thread.opened` | changing what opening a thread does or emits |
+| `lib/c3/threads.ex` | `C3.Threads.post_message` | context | Posts a request, response or note. A response resolves the requests it answers. Returns `%{thread, messages, resolved}` | a response should resolve more or fewer requests; posting to a finished thread |
+| `lib/c3/threads.ex` | `C3.Threads.claim` / `C3.Threads.cancel` | context | A claim is a conditional `UPDATE … WHERE request_state = 'open'`, so the losing agent gets a `409` | race behaviour between two agents; who may cancel a request |
+| `lib/c3/threads.ex` | `C3.Threads.finish` / `C3.Threads.reopen` / `C3.Threads.admin_finish` | context | Only `opened_by` may finish a thread. It must pass `force` while requests are pending. The admin path always forces (`finish_thread(thread, :admin, true)`) | changing who may close a thread |
+| `lib/c3/threads.ex` | `C3.Threads.release_claims!` + `C3.Threads.refresh_threads!` | context | Puts an agent's claims back to `open` and does **not** recompute status itself. The caller (`lib/c3/sessions.ex`) has to call `refresh_threads!` in the same transaction | an agent leaves or is kicked and its claims misbehave |
+| `lib/c3/threads.ex` | `C3.Threads.expire_claims` | context | Releases claims held by agents unseen for `claim_ttl`, emits `request.claim_expired`. Run by `lib/c3/sweeper.ex` | changing claim timeouts or what "silent agent" means |
+| `lib/c3/threads.ex` | `apply_state!` | context | Writes the derived status and `finished_at` together (a CHECK ties them), emits `thread.status_changed` only when the status moved | a new state-changing write; extra event payload |
+| `lib/c3/threads.ex` | `lock_thread!`, `next_thread_number!`, `next_message_number!` | context | Row lock, and the per-session `T<n>` and per-thread `.<n>` numbering | a write that skips the lock (don't); numbering gaps |
+
+## State machine and helpers
+
+| Path | Export | Kind | Responsibility | Touch when |
+|---|---|---|---|---|
+| `lib/c3/threads/derivation.ex` | `C3.Threads.Derivation.derive` | util | Pure function with the precedence `finished` > `pending` (any open) > `processing` (any claimed) > `answered`. `awaiting` and `processing_by` are always computed, even when the thread is `pending` | adding a thread status or changing precedence |
+| `lib/c3/threads/guards.ex` | `actionable!` | util | Rolls back with a reason when a request is not pending (409), not addressed to you (403) or held by someone else (409, with `claimed_by`) | changing an error code or message an agent sees |
+| `lib/c3/threads/guards.ex` | `resolvable!` | util | A response without `reply_to` resolves **every** request addressed to the author that nobody else holds. A `reply_to` pointing at a non-request resolves none | "my response closed requests I didn't mean" |
+| `lib/c3/threads/guards.ex` | `addressed_to?` | util | `agent` matches by id, `label` by label, `any` matches everyone except the author | changing who counts as a recipient |
+| `lib/c3/threads/guards.ex` | `targets_for`, `parse_kind`, `check_body_size`, `check_reason` | util | Checks run before the transaction starts. `to` is rejected on anything but a request. `system` cannot be posted (it is not in `@kinds`) | accepting a new message kind or field |
+| `lib/c3/threads/targets.ex` | `C3.Threads.Targets.resolve` | util | Turns `to` (name, list, `label:<x>`, `any`, or omitted = `any`) into targets and drops repeats. A named agent must be active and not the author. A label needs no current holder | adding an addressing form; self-addressing rules |
+| `lib/c3/threads/targets.ex` | `C3.Threads.Targets.display` | util | Renders a target back as `AG2` / `label:x` / `any` | changing how `to` and `awaiting` read |
+| `lib/c3/threads/refs.ex` | `thread_ref`, `message_ref`, `parse_thread_ref`, `parse_message_ref` | util | `T3` / `T3.2` readable ids. A message ref also accepts a bare positive integer | accepting a new ref syntax |
+
+## Reads
+
+| Path | Export | Kind | Responsibility | Touch when |
+|---|---|---|---|---|
+| `lib/c3/threads/queries.ex` | `C3.Threads.Queries.inbox` | service | Open requests addressed to me plus the ones I claimed, grouped by thread in `[t.number, m.number]` order | changing what the watcher wakes for |
+| `lib/c3/threads/queries.ex` | `list_threads` (`filter_status`, `filter_awaiting`) | service | Thread list with the `status` and `awaiting=me` filters | adding a list filter |
+| `lib/c3/threads/queries.ex` | `states` / `state` / `request_rows` | service | Batch-derives state for display through `Derivation`. It is not the cached column | a list shows a wrong `awaiting` |
+| `lib/c3/threads/queries.ex` | `fetch_thread`, `fetch_message`, `list_messages` (`since`) | service | Session-scoped lookup by ref, and incremental message reads | thread lookup crossing sessions; `?since=` |
+| `lib/c3/threads/queries.ex` | `addressed_requests`, `addressed_to` | service | Query-side version of `Guards.addressed_to?`. The two must agree | changing addressing (change both) |
 
 ## Schemas
 
 | Path | Export | Kind | Responsibility | Touch when |
 |---|---|---|---|---|
-| `lib/c3/threads/message.ex` | `C3.Threads.Message.changeset/2` | schema | a message; for requests, `to_*` and `request_state` must be present exactly; `claimed_by_agent_id` is required exactly when `claimed`, and either way on `done` | adding a column, a kind (`:system` already exists and has no author), or a request state; mirror it in the DB CHECKs under `priv/repo/migrations/` |
-| `lib/c3/threads/message.ex` | `C3.Threads.Message.max_body_bytes/0` | constant | body cap, read from `C3.Config` `:max_body_bytes` | changing the body size limit (also checked before the transaction, in `check_body_size`) |
-| `lib/c3/threads/thread.ex` | `C3.Threads.Thread.changeset/2` | schema | thread row; `finished_at` must be present iff `status == :finished` (also a DB CHECK); `lock_version` is the row-lock bump | adding a thread field, changing title limits (1–200) |
+| `lib/c3/threads/message.ex` | `C3.Threads.Message.changeset` | schema | One row per message. Request-only fields (`to_target`, `request_state`) are enforced by `validate_present_iff` and mirrored by DB CHECKs (`messages_*_check`). `claimed_by` must be set exactly when `claimed`, and is optional when `done` | adding a message field or state; a CHECK violation in tests |
+| `lib/c3/threads/message.ex` | `max_body_bytes` | schema | Body limit, counted in bytes, from `:max_body_bytes` | changing the body size limit |
+| `lib/c3/threads/thread.ex` | `C3.Threads.Thread.changeset` | schema | `status` is a cache. `finished_at` must be present exactly when `finished` (`threads_finished_at_check`). Title is limited to 200 chars | adding a thread field; changing the title limit |
 
 ## Controllers
 
 | Path | Export | Kind | Responsibility | Touch when |
 |---|---|---|---|---|
-| `lib/c3_web/controllers/v1/thread_controller.ex` | `C3Web.V1.ThreadController` | controller | `/v1/sessions/:code/threads` and `/v1/threads/:id/{messages,claim,cancel,finish,reopen}`; resolves `T3` within the token's session; errors go through `C3Web.V1.FallbackController` | adding a thread endpoint or list filter (`status`, `awaiting=me` only) |
-| `lib/c3_web/controllers/v1/inbox_controller.ex` | `C3Web.V1.InboxController.show/2` | controller | `GET /v1/inbox`: requests from `C3.Threads.inbox/1` plus notices from `C3.Sessions.take_notices/1`. **Reading it is a write**: it marks cancellations and alerts as seen, so each one shows only once | changing what the watcher wakes on |
-| `lib/c3_web/controllers/v1/thread_json.ex` | `C3Web.V1.ThreadJSON.summary/2`, `C3Web.V1.ThreadJSON.message/2` | dto | only readable ids leave (`T3`, `T3.5`, `AG2`); request-only fields appear only on requests | changing the thread/message wire shape. Also reused by the inbox, the session view and MCP |
-| `lib/c3_web/controllers/v1/inbox_json.ex` | `C3Web.V1.InboxJSON.show/1` | dto | `empty` flag, requests (with `from`, minus `kind`/`author`/`resolved_at`), cancellations taken from event payloads, alerts | changing the inbox shape that the plugin's watcher parses |
+| `lib/c3_web/controllers/v1/thread_controller.ex` | `C3Web.V1.ThreadController` | controller | `/v1/sessions/:code/threads` and `/v1/threads/:id/{messages,claim,cancel,finish,reopen}`. `:id` is the `T3` ref inside the token's session. Errors go to `FallbackController` | adding a thread endpoint or query param (this changes MCP too) |
+| `lib/c3_web/controllers/v1/thread_controller.ex` | `list_opts` / `status_opt` / `awaiting_opt` | controller | Validates `status` against `@statuses` and `awaiting` (only `"me"`) | new list filter |
+| `lib/c3_web/controllers/v1/thread_json.ex` | `summary`, `message`, `posted`, `action` | dto | Wire shape of threads and messages. `posted` adds `resolved` | changing the response shape (breaks MCP parity) |
+| `lib/c3_web/controllers/v1/inbox_controller.ex` | `C3Web.V1.InboxController.show` | controller | `GET /v1/inbox`. Calls `Sessions.take_notices`, which **marks cancellations and alerts as seen on read**, so each one is returned only once | inbox shows a notice twice or never |
+| `lib/c3_web/controllers/v1/inbox_json.ex` | `C3Web.V1.InboxJSON.show` | dto | `empty: true` plus requests, cancellations and alerts | changing what the watcher parses |
 
 ## Tests
 
 | Path | Covers |
 |---|---|
-| `test/c3/threads/writes_test.exs` | open, responses (resolution with and without `reply_to`), claim races, cancel, finish/force/reopen, leave, `expire_claims/1`, `inbox/1`, `take_notices` |
-| `test/c3/threads/derivation_test.exs` | rule order and the `awaiting`/`processing_by` lists of `derive/2` |
-| `test/c3/threads_test.exs` | `Thread.changeset/2` and `Message.changeset/2` invariants against the DB CHECKs; context reads |
-| `test/c3_web/controllers/v1/thread_controller_test.exs` | HTTP for threads, `GET /v1/inbox`, cancel, auth without `:code`, `Idempotency-Key` replay |
+| `test/c3/threads/derivation_test.exs` | Table of `derive` cases: precedence, `awaiting` and `processing_by` order and uniqueness |
+| `test/c3/threads/writes_test.exs` | Write paths against the DB: events, claims, release/expiry |
+| `test/c3/threads_test.exs` | Context API of `C3.Threads` |
+| `test/c3_web/controllers/v1/thread_controller_test.exs` | REST endpoints, error codes, idempotency keys |
+| `test/c3_web/mcp/parity_test.exs` | Same scenario through `/v1` and `/mcp`. Masked transcripts must be equal |
+| `test/c3/db_constraints_test.exs` | DB CHECKs that back the changesets _(contents not read here)_ |
 
 ## Not owned here
 
 | Path | Owner |
 |---|---|
-| `lib/c3/threads/attachment.ex`, `lib/c3/attachments.ex` | [`attachments`](../attachments/02-files.md) |
-| `lib/c3/events.ex`, `lib/c3/events/event.ex` (the `Events.append!` calls made from here) | [`event-feed`](../event-feed/02-files.md) |
-| `lib/c3/sessions.ex` (`take_notices`, `leave`/`kick` which call `release_claims!`) | [`sessions-and-agents`](../sessions-and-agents/02-files.md) |
-| `lib/c3/sweeper.ex` | [architecture · processes](../../architecture/04-processes-and-background-work.md) |
-| `lib/c3_web/plugs/idempotency.ex` | [architecture · request pipeline](../../architecture/01-request-pipeline-and-routing.md) |
-| `lib/c3_web/mcp/dispatch.ex`, `lib/c3_web/mcp/tools.ex` | [`mcp-server`](../mcp-server/02-files.md) |
-| `lib/c3/admin.ex` (`finish_thread` → `admin_finish/1`), `lib/c3_web/live/admin/session_live.ex` | [`admin-ui`](../admin-ui/02-files.md) |
-| `plugin/` (the watcher that reads `/v1/inbox`) | [`watcher-and-plugin`](../watcher-and-plugin/02-files.md) |
+| `lib/c3/threads/attachment.ex`, `lib/c3/attachments.ex` | [attachments](../attachments/) |
+| `lib/c3/sessions.ex` (calls `release_claims!` and `refresh_threads!`, `take_notices`) | [sessions-and-agents](../sessions-and-agents/) |
+| `lib/c3/sweeper.ex` (calls `expire_claims`) | [session-lifecycle](../session-lifecycle/) |
+| `lib/c3/events.ex` (`Events.append!`) | [event-feed](../event-feed/) |
+| `lib/c3_web/mcp/dispatch.ex`, `lib/c3_web/mcp/tools.ex` | [mcp-server](../mcp-server/) |
+| `lib/c3/admin.ex` (`finish_thread` → `admin_finish`), `lib/c3_web/live/admin/session_live.ex` | [admin-ui](../admin-ui/) |
+| `lib/c3_web/plugs/agent_auth.ex`, `lib/c3_web/plugs/idempotency.ex`, `lib/c3_web/controllers/v1/fallback_controller.ex` | shared request pipeline |

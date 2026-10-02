@@ -2,7 +2,7 @@
 doc: FEATURE-MAP
 repo: c3
 kind: folder-index
-anchored_to: fcd0bd9
+anchored_to: fa64fbd
 generated: 2026-10-02
 ---
 # Feature map — route a ticket by what it calls things
@@ -30,7 +30,7 @@ routing card only.
 | [`metrics`](features/metrics/00-INDEX.md) | C | admin panel "Metrics since the node started" | `/metrics` |
 | [`session-lifecycle`](features/session-lifecycle/00-INDEX.md) | B | (event type), values /, config keys, the admin's purge action | — |
 | [`sessions-and-agents`](features/sessions-and-agents/00-INDEX.md) | A | statuses | `/v1/sessions`, `/v1/sessions/:code` |
-| [`threads-and-requests`](features/threads-and-requests/00-INDEX.md) | A | = | |; =, =, thread refs message refs; inbox | `/v1/sessions/:code/threads`, `/v1/sessions/:code/inbox` |
+| [`threads-and-requests`](features/threads-and-requests/00-INDEX.md) | A | (tool names defined ); fields,, statuses | `/v1/sessions/:code/threads`, `/v1/sessions/:code/inbox` |
 | [`watcher-and-plugin`](features/watcher-and-plugin/00-INDEX.md) | A | Line kinds:,. Line form: | `/v1/sessions/:code/watch` |
 
 ## When nothing matches

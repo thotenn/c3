@@ -2,119 +2,140 @@
 doc: general-context/03-lifecycle-and-call-chains
 repo: c3
 kind: general
-anchored_to: fcd0bd9
+anchored_to: fa64fbdfd37e201f327d5422584a528b9e7217b8
 generated: 2026-10-02
 ---
 # Lifecycle and call chains
 
-C3 has no process per session. Every write is a single database transaction in a context module (`lib/c3/sessions.ex`, `lib/c3/threads.ex`). The transaction recomputes the thread's cached `status` before it commits and appends events through `lib/c3/events.ex:append!`, which takes the next `seq` from the session row inside that same transaction. `lib/c3/repo.ex:transaction` holds back the PubSub announcement until the outermost transaction commits, so a rollback announces nothing. Readers such as the long-poll, `/watch` and the admin LiveViews subscribe first, then query the table, and treat each announcement as "query again". The table is the source of truth and a PubSub message is only a hint. MCP tool calls get no separate code path: each one is re-dispatched through the REST router in-process.
+c3 has no process per session. Every write is one SQLite transaction. The context function does three things inside it, in order: it serializes the write (for thread writes, it locks the thread row), it recomputes the cached `threads.status`, and it appends events with the session's next `seq`. Notifying the subscribers is left to the repo: `lib/c3/repo.ex:transaction` wraps only the **outermost** transaction in `lib/c3/events.ex:publish_after`. The events appended inside it are broadcast on PubSub only after that transaction returns `{:ok, _}`. A rollback announces nothing. A long-poll subscribes to the session topic **before** it queries `seq > after`, so an event committed between the query and the wait still wakes it.
 
 ## Boot
 
-`lib/c3/application.ex:start` validates config and then starts its children in this order:
+`lib/c3/application.ex:start` runs these steps in order, under a `:one_for_one` supervisor:
 
-1. `lib/c3/config.ex:validate!` runs before any child starts, so a bad `C3_*` setting stops boot. See [configuration](../architecture/05-configuration-and-environments.md).
-2. `C3Web.Telemetry`, then `C3.Repo`.
-3. `Ecto.Migrator` runs the migrations, but only inside a release. `lib/c3/application.ex:skip_migrations?` skips them when `RELEASE_NAME` is unset (dev and test use mix).
-4. `DNSCluster`, then `Phoenix.PubSub` named `C3.PubSub`. All event fan-out goes through `C3.PubSub`.
-5. The ETS-backed servers: `lib/c3/security/ban_cache.ex`, `lib/c3/rate_limiter.ex`, `lib/c3/idempotency.ex`, `lib/c3/metrics.ex`.
-6. `lib/c3/sweeper.ex:run` starts only when `C3.Config.get(:sweeper)` is set; it is off in test. It expires claims, warns, closes and purges sessions, purges idempotency keys, and sweeps orphan attachments.
-7. `C3Web.Endpoint` starts last, so no request arrives before the Repo, PubSub and caches are up.
+1. `lib/c3/config.ex:validate!` runs first. A bad `C3_*` setting stops the boot before any child starts.
+2. `C3Web.Telemetry` starts, then `C3.Repo`.
+3. `Ecto.Migrator` runs the migrations at boot only inside a release (`lib/c3/application.ex:skip_migrations?` checks `RELEASE_NAME`). In development, migrations are run by hand. `lib/c3/release.ex:migrate` is the release entry point.
+4. `DNSCluster` and `Phoenix.PubSub` (`C3.PubSub`) start. PubSub must be running before anything appends events.
+5. The ETS-backed servers start: `C3.Security.BanCache`, `C3.RateLimiter`, `C3.Idempotency`, `C3.Metrics`.
+6. `C3.Sweeper` starts only when `C3.Config.get(:sweeper)` is truthy. It is off in test. It expires silent claims through `lib/c3/threads.ex:expire_claims`.
+7. `C3Web.Endpoint` starts last, so no request arrives before the steps above are up.
 
-The supervisor is `:one_for_one`. Details are in [processes and background work](../architecture/04-processes-and-background-work.md).
+What each child does: [`../architecture/04-processes-and-background-work.md`](../architecture/04-processes-and-background-work.md).
 
-## The invariant every write chain shares
+## Shared mechanics every chain relies on
 
-| Step | Where | Trap |
+| Mechanism | Where | The trap |
 |---|---|---|
-| Transaction opens | `lib/c3/repo.ex:transaction` → `lib/c3/events.ex:publish_after` | Only the **outermost** call wraps `publish_after`. A nested call goes straight to `super`, so its events wait for the outer commit. |
-| Thread row locked | `lib/c3/threads.ex:lock_thread!` | It is an `UPDATE` that bumps `lock_version`, not a `SELECT … FOR UPDATE`. SQLite already serializes writers. The lock exists so Postgres stays correct. |
-| Event appended | `lib/c3/events.ex:append!` | Must run inside the caller's transaction: the `event_seq` increment and the event insert commit together. Called outside a transaction, it broadcasts immediately (`lib/c3/events.ex:notify`). |
-| Status recomputed | `lib/c3/threads.ex:apply_state!` → `lib/c3/threads/derivation.ex` | Runs last in each thread write, after the request rows change. It appends `:thread_status_changed` only when the status actually changes. |
-| Published | `lib/c3/events.ex:publish_after` → `broadcast` | Only on `{:ok, _}`, and only the highest `seq` per session. The message goes to `session:<id>` **and** to the `admin` topic. |
+| Event publish after commit | `lib/c3/repo.ex:transaction` → `lib/c3/events.ex:publish_after` | A nested `Repo.transaction` does not publish. Only the outermost one does. An `append!` outside any transaction broadcasts at once (`lib/c3/events.ex:notify`). |
+| One broadcast per session per transaction | `lib/c3/events.ex:notify` keeps only the highest `seq` | The message `{:c3_events, session_id, seq}` says *something up to this seq exists*. It does not carry the event. Subscribers re-query. |
+| Event seq | `lib/c3/events.ex:append!` does `UPDATE sessions … inc: event_seq` | Must run inside the caller's transaction, so the counter and the event row commit together. |
+| Thread lock | `lib/c3/threads.ex:lock_thread!`, an `UPDATE` that bumps `lock_version` | A thread write that skips it can race with a claim or a finish. `release_claims!` locks threads in id order. |
+| Derived status | `lib/c3/threads.ex:apply_state!` → `lib/c3/threads/derivation.ex:derive` | Writes `status` and `finished_at` together and appends `thread_status_changed` only when the status moved. Every thread write ends with it. |
+| Agent auth | `lib/c3_web/plugs/agent_auth.ex:call` | Runs `touch_seen` always, and `touch_activity` only when `activity: true`. The `:feed` pipeline turns it off: watching does not keep a session alive. |
+| Idempotency | `lib/c3_web/plugs/idempotency.ex:call` | `POST` only, after `AgentAuth`. `rotate-secret` goes through `:agent_no_replay` on purpose. |
+| Error shape | `lib/c3_web/controllers/v1/fallback_controller.ex:call` | Context functions return `{:error, …}` tuples (often from `Repo.rollback`). The fallback maps them to statuses. |
 
-## Create and join a session
+Routing and plugs: [`../architecture/01-request-pipeline-and-routing.md`](../architecture/01-request-pipeline-and-routing.md). Auth: [`../architecture/03-authentication-and-authorization.md`](../architecture/03-authentication-and-authorization.md).
 
-1. `lib/c3_web/router.ex` `post "/sessions"` / `post "/sessions/:code/join"` go through the `:v1` pipeline only: `lib/c3_web/plugs/real_ip.ex` and the per-IP `lib/c3_web/plugs/rate_limit.ex`. Neither route needs a token. Join does not use idempotency keys, because there is no `AgentAuth` yet.
-2. `lib/c3_web/controllers/v1/session_controller.ex:create` / `join`.
-3. `lib/c3/sessions.ex:create_session` checks the IP ban (`check_ban`) and the label, then generates and hashes the secret **outside** the transaction.
-4. `lib/c3/sessions.ex:insert_session` opens the transaction and inserts the `Session` with a fresh code. If the code collides, the transaction rolls back and the insert is retried up to 3 times. It does not reuse a transaction after a constraint error, which Postgres would abort.
-5. `lib/c3/sessions.ex:add_agent!` allocates the agent number with an atomic `next_agent_number` increment (`AG<n>`), stores only the token hash, and calls `lib/c3/events.ex:append!` with `:agent_joined`.
-6. On a join, `lib/c3/sessions.ex:join_session` → `join_existing` verifies the secret **before** it opens a transaction, then calls the same `add_agent!`.
-7. A bad secret takes `lib/c3/sessions.ex:invalid_secret` instead. That path records the failure, appends `:security_join_failed`, and may lock the session's joins (`maybe_lock_joins` → `:session_joins_locked`). An unknown code takes `lib/c3/sessions.ex:unknown_code`, which runs `Credentials.dummy_verify()` so timing does not reveal that the code is unknown.
-8. After the commit, `:agent_joined` is announced. `lib/c3/watch.ex:relevant` turns it into a `joined` line only for `AG1`.
+## Chain 1 — create a session
 
-The clear secret and token exist only in the return value of steps 3 to 5. See [sessions and agents](../features/sessions-and-agents/00-INDEX.md) and [join security](../features/join-security/00-INDEX.md).
+`POST /v1/sessions` goes through `:v1` only. No token exists yet.
 
-## Open thread → claim → answer → finish
+1. `lib/c3_web/router.ex` sends the request through the `:v1` pipeline: `C3Web.Plugs.RealIp`, then `C3Web.Plugs.RateLimit` per IP.
+2. `lib/c3_web/controllers/v1/session_controller.ex:create` calls `lib/c3/sessions.ex:create_session`.
+3. `create_session` calls `check_ban(ip)` and `validate_agent_label`, then generates the clear secret (`C3.Credentials.generate_secret`).
+4. `lib/c3/sessions.ex:insert_session` starts the **transaction**. It inserts the `Session` with a fresh code. On a code collision it rolls back and retries, up to 3 attempts, instead of reusing the failed transaction.
+5. `lib/c3/sessions.ex:add_agent!` increments `next_agent_number`, inserts the `Agent` (`AG<n>`) with only the token hash, and appends `:agent_joined` with `lib/c3/events.ex:append!`.
+6. The commit happens in `C3.Repo.transaction`, then `lib/c3/events.ex:publish_after` broadcasts. `create_session` then emits `Metrics.emit([:session, :created])`.
+7. `lib/c3_web/controllers/v1/session_json.ex:created` renders the response. It is the only place the clear secret and token ever exist.
 
-Every route here goes through `:v1` + `:agent`: `lib/c3_web/plugs/agent_auth.ex:call`, then the per-token rate limit, then `lib/c3_web/plugs/idempotency.ex:call` on `POST`. `AgentAuth` returns 403 when the token belongs to another session, 410 when the session is closed, and 401 when the token was revoked. It also refreshes `touch_seen` and `touch_activity`. Controllers resolve `T<n>` with `lib/c3/threads.ex:fetch_thread` **before** the transaction opens.
+## Chain 2 — join a session
 
-**Open**
+`POST /v1/sessions/:code/join`.
 
-1. `lib/c3_web/controllers/v1/thread_controller.ex:create` → `lib/c3/threads.ex:open_thread`.
-2. Outside the transaction: `check_body_size`, `lib/c3/attachments.ex:prepare`, `lib/c3/threads/targets.ex:resolve`.
-3. `Attachments.with_cleanup` wraps `Repo.transaction`. Files written by a transaction that rolls back are removed.
-4. The thread is inserted; its number comes from `next_thread_number!`. There is **no** `lock_thread!` here, because the row is new. `insert_requests!` creates one request message per target.
-5. `lib/c3/attachments.ex:store!`, then `Events.append!(:thread_opened)`, which carries the targets and request refs. Then `apply_state!` recomputes the status, usually emitting `:thread_status_changed`.
+1. The same `:v1` pipeline runs, then `lib/c3_web/controllers/v1/session_controller.ex:join` calls `lib/c3/sessions.ex:join_session`.
+2. `check_ban` runs. A banned IP gets `{:error, :ip_banned, until}` and nothing is recorded.
+3. `Credentials.normalize_code` and `get_session_by_code` look up the session. An unknown code goes to `lib/c3/sessions.ex:unknown_code`. It runs a dummy verify (equal timing), records the failure in its own transaction, and may ban the IP.
+4. `lib/c3/sessions.ex:join_existing` checks a closed or join-locked session **before** checking the secret, so a locked session never says whether the secret was right.
+5. A valid secret starts a **transaction**, `add_agent!` runs as in Chain 1, the transaction commits, and `agent_joined` is published. The watcher of `AG1` turns that event into a `joined` line (`lib/c3/watch.ex`).
+6. A wrong secret goes to `lib/c3/sessions.ex:invalid_secret`. In one transaction it records the failure, bans the IP and appends `:security_join_failed`. Enough distinct IPs make it append `:session_joins_locked`.
 
-**Claim**
+Details: [`../features/join-security/00-INDEX.md`](../features/join-security/00-INDEX.md), [`../features/sessions-and-agents/00-INDEX.md`](../features/sessions-and-agents/00-INDEX.md).
 
-1. `lib/c3_web/controllers/v1/thread_controller.ex:claim` → `lib/c3/threads.ex:claim`.
-2. The transaction opens, then `lock_thread!`. A finished thread rolls back (`rollback_finished`).
-3. A conditional `update_all … where request_state == :open` decides the race: exactly one agent changes the row. A claim that changes nothing and holds nothing rolls back with `{:conflict, …, %{claimed_by: …}}`, which becomes a 409. Claiming a request you already hold is a no-op.
-4. One `:request_claimed` per claimed request, then `apply_state!`.
+## Chain 3 — open thread → claim → answer → finish
 
-**Answer**
+All four requests go through `:v1` + `:agent` (`AgentAuth`, the per-token `RateLimit`, `Idempotency`). Each controller action first resolves `T3` through `lib/c3/threads/queries.ex:fetch_thread`, which is scoped to the agent's session.
 
-1. `lib/c3_web/controllers/v1/thread_controller.ex:post_message` → `lib/c3/threads.ex:post_message` with `kind: response`.
-2. The transaction opens, then `lock_thread!`, then `fetch_reply_to!` and `next_message_number!`.
-3. `resolvable!` finds what this response resolves. Without `reply_to`, that is every request addressed to the author. `insert_message!` writes the response. `resolve!` marks those requests done and claims any that nobody had claimed.
-4. `:message_posted` carries `resolved` and `resolved_for`. `lib/c3/watch.ex:relevant` uses `resolved_for` to wake each requester with an `answer` line. Then `apply_state!`.
+**Open** — `POST /v1/sessions/:code/threads`
+1. `lib/c3_web/controllers/v1/thread_controller.ex:create` calls `lib/c3/threads.ex:open_thread`.
+2. Before any transaction, `open_thread` runs `check_body_size`, prepares the attachments with `C3.Attachments.prepare` (files are written first and removed by `with_cleanup` on failure), and resolves the targets with `lib/c3/threads/targets.ex`.
+3. The **transaction** starts. It inserts the `Thread` (with `next_thread_number!`), calls `insert_requests!` (one request per target) and `Attachments.store!`.
+4. It calls `Events.append!(…, :thread_opened)`.
+5. `apply_state!(thread, nil, author)` recomputes the status, which normally becomes `pending`, and appends `thread_status_changed`.
+6. The transaction commits and the events are published. The recipients' watchers wake up (Chain 4) and print `request` lines.
 
-**Finish**
+**Claim** — `POST /v1/threads/:id/claim`
+1. `thread_controller.ex:claim` calls `lib/c3/threads.ex:claim`. The **transaction** starts, then `lock_thread!` runs. A finished thread rolls back.
+2. A conditional `update_all … where request_state == :open` sets the requests to `claimed`. Of two agents racing for one request, only one matches. If the agent got nothing and holds nothing, `Repo.rollback({:conflict, …, %{claimed_by: …}})` returns a 409.
+3. It appends one `:request_claimed` per claimed request, then `apply_state!` runs and the status moves to `processing`.
+4. The transaction commits and the events are published.
 
-1. `lib/c3_web/controllers/v1/thread_controller.ex:finish` → `lib/c3/threads.ex:finish` → `finish_thread`. The admin path is `lib/c3/threads.ex:admin_finish`, which always forces.
-2. The transaction opens, then `lock_thread!`, then `check_opened_by!`: only the agent that opened the thread can finish it. Finishing an already finished thread is a no-op that returns `changed: false`.
-3. If requests are still pending and `force` is not set, it rolls back with a 409 listing them. With `force`, they are set to `:cancelled` and each one gets a `:request_cancelled` event. The holder learns to stop from this event.
-4. `apply_state!` runs with the `finished_at` timestamp.
+**Answer** — `POST /v1/threads/:id/messages` with `kind: "response"`
+1. `thread_controller.ex:post_message` calls `lib/c3/threads.ex:post_message`. `parse_kind`, the size check, the attachments and `targets_for` all run before the transaction.
+2. The **transaction** starts, then `lock_thread!` runs, then `fetch_reply_to!` and `next_message_number!`.
+3. `resolvable!` → `insert_message!(:response)` → `resolve!` resolves the request. It claims the request on the way if nobody had. Without `reply_to`, the response resolves every request the author may answer.
+4. The transaction updates `last_message_at` and appends `:message_posted` with `resolved` / `resolved_for`. The requester's watcher keys its `answer` line on `resolved_for`.
+5. `apply_state!` runs, the status becomes `answered`, the transaction commits and the events are published.
 
-Background expiry follows the same pattern from the sweeper: `lib/c3/threads.ex:expire_claims` opens its own transaction per thread and appends `:request_claim_expired`. See [threads and requests](../features/threads-and-requests/00-INDEX.md).
+**Finish** — `POST /v1/threads/:id/finish`
+1. `thread_controller.ex:finish` calls `lib/c3/threads.ex:finish`, which calls `finish_thread`. The **transaction** starts, then `lock_thread!` and `check_opened_by!` run. Only the thread's opener can finish it. The admin uses `admin_finish`, which is always forced.
+2. Finishing an already finished thread is a no-op (`changed: false`).
+3. Pending requests without `force` make it roll back with a 409 that lists them. With `force`, they are set to `cancelled` and each gets a `:request_cancelled` event.
+4. `apply_state!(thread, now, …)` sets `finished_at`, the status becomes `finished`, the transaction commits and the events are published.
 
-## Long-poll and watch wake-up
+`reopen` follows the same pattern: `lock_thread!` → `apply_state!(thread, nil, …)`. Status rules: [`../features/threads-and-requests/00-INDEX.md`](../features/threads-and-requests/00-INDEX.md). Tables and constraints: [`../architecture/02-data-model-and-persistence.md`](../architecture/02-data-model-and-persistence.md).
 
-1. The plugin's `plugin/skills/c3/scripts/c3-watch.sh` `poll` calls `GET …/watch?after=<cursor>&wait=<s>` with curl and saves the returned `cursor` after every poll. `save` sets the cursor to the session's current end (`current_end`), so a freshly saved watcher never reports old events.
-2. The route goes through `[:sse, :feed]` in `lib/c3_web/router.ex`. In `:feed`, `AgentAuth` runs with `activity: false`, so polling does **not** postpone the session's idle close.
-3. `lib/c3_web/controllers/v1/event_controller.ex:watch` caps `wait` at `long_poll_max_wait` and sets a deadline. `watch_after` then loops.
-4. `lib/c3/events.ex:wait_after` calls `subscribe` **first**, and only then `list_after(seq > after)`. Anything committed before the query shows up in its result; anything committed after it arrives as a message. Nothing falls between the two.
-5. If the query is empty, `lib/c3/events.ex:await` blocks in `receive`. It ignores announcements with `seq <= after` and re-queries on any other announcement. When the deadline passes it returns `[]`. A `:telemetry` `[:c3, :long_poll, :stop]` event records the outcome as `immediate`, `woken` or `timeout`.
-6. The `after` block unsubscribes and flushes leftover messages (`lib/c3/events.ex:unsubscribe`).
-7. `watch_after` maps each event through `lib/c3/watch.ex:line`. Events the agent caused itself are never reported back to it. If none of the events concern this agent, `watch_after` advances the cursor and waits again until the deadline. The response is `cursor <seq>` followed by `<kind> <seq> …` lines.
-8. If the node dies between a commit and its publish, the waiter just times out. The next poll uses the same `after`, so the event is delivered then.
+## Chain 4 — the long-poll / watch wake-up
 
-The JSON feed (`lib/c3_web/controllers/v1/event_controller.ex:index`) uses the same `wait_after`. See [event feed](../features/event-feed/00-INDEX.md) and [watcher and plugin](../features/watcher-and-plugin/00-INDEX.md).
+`GET /v1/sessions/:code/watch?after=N&wait=S` goes through `[:sse, :feed]`. `AgentAuth` runs with `activity: false`.
 
-## An MCP tool call
+1. `plugin/skills/c3/scripts/c3-watch.sh` `wait` loops on `curl …/watch?after=$after&wait=…`. It saves the cursor after every poll, so a restart loses nothing.
+2. `lib/c3_web/controllers/v1/event_controller.ex:watch` caps `wait` at `long_poll_max_wait` and calls `watch_after`.
+3. `lib/c3/events.ex:wait_after` calls **`subscribe(session)` first**. Only then does it run `list_after(session, after_seq)`. Its `:subscribed` option exists so tests can commit an event in exactly that gap.
+4. If events already exist, the outcome is `immediate`. If not, `await` blocks in `receive`. It ignores `{:c3_events, id, seq}` messages with `seq <= after`, and re-queries on any newer one (`woken`). When the deadline passes it returns `[]` (`timeout`).
+5. A writer's outermost commit leads to `lib/c3/events.ex:broadcast` on `"session:<id>"`, which is the message that wakes step 4.
+6. `watch_after` maps the events through `lib/c3/watch.ex:line`. If none of them concern this agent and time remains, it polls again with the advanced cursor.
+7. The response is `text/plain`: a `cursor <seq>` line, then the lines that concern this agent. The `after` clause of `wait_after` unsubscribes and flushes the leftover messages from the mailbox.
 
-1. `lib/c3_web/router.ex` `post "/mcp"` goes through the `:mcp` pipeline: `lib/c3_web/plugs/origin.ex`, `RealIp`, and the per-IP rate limit. The pipeline has no `accepts`, so a legacy `GET` gets a 405 instead of a 406.
-2. `lib/c3_web/controllers/mcp_controller.ex:post` → `lib/c3_web/mcp/server.ex:handle`, which handles JSON-RPC.
-3. For `tools/call`, `lib/c3_web/mcp/server.ex:call` → `lib/c3_web/mcp/tools.ex:request` maps the tool name to its `route` (`"/v1" <> path`) and splits the arguments into query and body. When the tool needs `:code` and only a token is given, `session_code` fills it in by looking the token up. `c3_events` is always forced to `wait=0`, because the watcher script does the waiting, not the tool.
-4. `lib/c3_web/mcp/dispatch.ex:run` builds a synthetic `Plug.Conn` and passes it to `C3Web.Router.call`. That conn uses a no-socket `Adapter`, keeps the client IP, sets `private: %{c3_mcp: true}` so the per-IP limit is not counted twice, and adds `Authorization` and `Idempotency-Key` headers. The request goes through `AgentAuth`, the token rate limit, `Idempotency`, the same controller and `lib/c3_web/controllers/v1/fallback_controller.ex`, so MCP and REST cannot drift apart.
-5. From the controller on, the chain is identical to the REST chains above. `lib/c3_web/mcp/server.ex:run` turns `{status, body}` into a tool result and rescues exceptions.
+`GET /v1/sessions/:code/events?wait=S` (`event_controller.ex:index`) runs the same `wait_after` and returns JSON. `event_controller.ex:stream` (SSE) also subscribes before `list_after`. Details: [`../features/event-feed/00-INDEX.md`](../features/event-feed/00-INDEX.md), [`../features/watcher-and-plugin/00-INDEX.md`](../features/watcher-and-plugin/00-INDEX.md).
 
-Because of step 4, a new REST route is not reachable over MCP until it has an entry in `lib/c3_web/mcp/tools.ex`. See [MCP server](../features/mcp-server/00-INDEX.md).
+## Chain 5 — an MCP tool call
+
+`plugin/.mcp.json` points the client at `<server_url>/mcp`. Every MCP tool call becomes an in-process `/v1` request.
+
+1. `lib/c3_web/router.ex` sends the request through the `:mcp` pipeline: `C3Web.Plugs.Origin`, `RealIp`, then `RateLimit` per IP. There is no `accepts`, so a `GET` gets a 405 from `lib/c3_web/controllers/mcp_controller.ex:not_allowed` instead of a 406.
+2. `lib/c3_web/controllers/mcp_controller.ex:post` calls `lib/c3_web/mcp/server.ex:handle`. A notification gets 202. `initialize` serves legacy clients. Otherwise `handle` picks the protocol version from the `MCP-Protocol-Version` header: `modern` checks the headers against the body, `legacy` does not.
+3. `call(conn, "tools/call", …)` calls `lib/c3_web/mcp/tools.ex:request`, which maps the tool to `{method, path, query, body, token, idempotency_key}`. The arguments are not validated against the schema here, so REST fails them exactly as it would a direct call. A tool that needs `:code` but gets only a token looks the code up through `Sessions.get_agent_by_token`. An unknown token becomes the path `-`, which REST answers with a 401. `c3_events` is forced to `wait=0`.
+4. `lib/c3_web/mcp/dispatch.ex:run` builds a fresh `Plug.Conn` with a stub adapter and the headers `authorization: Bearer …` and `idempotency-key`. It reuses the outer `client_ip` and marks the conn with `private.c3_mcp`. Then it calls `C3Web.Router.call` **again**.
+5. The inner request runs Chain 1–4 unchanged: the same pipelines, auth, idempotency, transactions and publish-after-commit.
+6. `lib/c3_web/mcp/server.ex:tool_result` wraps the REST status and body. A status of 400 or more becomes `isError: true` inside an HTTP 200, never an HTTP 401, which would push the client into OAuth. A crash in the inner request is rescued in `server.ex:run` and turned into a 500 tool result.
+
+Details: [`../features/mcp-server/00-INDEX.md`](../features/mcp-server/00-INDEX.md).
 
 ## Where to go next
 
 | You want | Open |
 |---|---|
-| Pipelines, plugs and the error shape behind each route | [`../architecture/01-request-pipeline-and-routing.md`](../architecture/01-request-pipeline-and-routing.md) |
-| Tables, `event_seq` / `next_agent_number` counters, migrations | [`../architecture/02-data-model-and-persistence.md`](../architecture/02-data-model-and-persistence.md) |
-| What `AgentAuth` blocks and why the feed skips activity | [`../architecture/03-authentication-and-authorization.md`](../architecture/03-authentication-and-authorization.md) |
-| Supervision tree, sweeper, PubSub topics, ETS | [`../architecture/04-processes-and-background-work.md`](../architecture/04-processes-and-background-work.md) |
-| `long_poll_max_wait`, `sweeper` and other settings | [`../architecture/05-configuration-and-environments.md`](../architecture/05-configuration-and-environments.md) |
-| How status is derived from requests | [`../features/threads-and-requests/00-INDEX.md`](../features/threads-and-requests/00-INDEX.md) |
-| Bans, join locks, secret rotation | [`../features/join-security/00-INDEX.md`](../features/join-security/00-INDEX.md) |
-| Idle close, warnings, purge | [`../features/session-lifecycle/00-INDEX.md`](../features/session-lifecycle/00-INDEX.md) |
-| Attachment storage and cleanup | [`../features/attachments/00-INDEX.md`](../features/attachments/00-INDEX.md) |
-| The admin's live view of the `admin` topic | [`../features/admin-ui/00-INDEX.md`](../features/admin-ui/00-INDEX.md) |
+| Why a request got 401/403/410, and what each plug does | [`../architecture/01-request-pipeline-and-routing.md`](../architecture/01-request-pipeline-and-routing.md) |
+| The tables behind `seq`, `lock_version` and `request_state` | [`../architecture/02-data-model-and-persistence.md`](../architecture/02-data-model-and-persistence.md) |
+| Token, admin and metrics identity | [`../architecture/03-authentication-and-authorization.md`](../architecture/03-authentication-and-authorization.md) |
+| The supervision tree, the Sweeper, PubSub topics, ETS | [`../architecture/04-processes-and-background-work.md`](../architecture/04-processes-and-background-work.md) |
+| `long_poll_max_wait`, `claim_ttl`, `sweeper` and the other settings | [`../architecture/05-configuration-and-environments.md`](../architecture/05-configuration-and-environments.md) |
+| Testing the subscribe/query gap and why DB tests are not async | [`../architecture/06-testing.md`](../architecture/06-testing.md) |
+| When migrations run in a release | [`../architecture/07-build-release-and-deploy.md`](../architecture/07-build-release-and-deploy.md) |
+| Thread status derivation, cancel and reopen | [`../features/threads-and-requests/00-INDEX.md`](../features/threads-and-requests/00-INDEX.md) |
+| Leave, close, idle expiry | [`../features/session-lifecycle/00-INDEX.md`](../features/session-lifecycle/00-INDEX.md) |
+| Attachments stored inside the open/post transaction | [`../features/attachments/00-INDEX.md`](../features/attachments/00-INDEX.md) |
+| The admin pages that subscribe to the `admin` topic | [`../features/admin-ui/00-INDEX.md`](../features/admin-ui/00-INDEX.md) |
+| The `long_poll` telemetry outcomes | [`../features/metrics/00-INDEX.md`](../features/metrics/00-INDEX.md) |
