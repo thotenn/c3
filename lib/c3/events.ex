@@ -130,16 +130,35 @@ defmodule C3.Events do
   subscription and the first query (tests use it to commit an event right in that gap).
   """
   def wait_after(%Session{} = session, after_seq, timeout_ms, opts \\ []) do
+    start = System.monotonic_time()
     deadline = System.monotonic_time(:millisecond) + timeout_ms
     :ok = subscribe(session)
 
     try do
       if fun = opts[:subscribed], do: fun.()
 
-      case list_after(session, after_seq, Keyword.take(opts, [:limit])) do
-        [] -> await(session, after_seq, deadline, opts)
-        events -> events
+      {outcome, events} =
+        case list_after(session, after_seq, Keyword.take(opts, [:limit])) do
+          [] ->
+            case await(session, after_seq, deadline, opts) do
+              [] -> {"timeout", []}
+              events -> {"woken", events}
+            end
+
+          events ->
+            {"immediate", events}
+        end
+
+      # A poll that may not wait (`wait=0`, `c3_events`) is no long-poll.
+      if timeout_ms > 0 do
+        :telemetry.execute(
+          [:c3, :long_poll, :stop],
+          %{duration: System.monotonic_time() - start},
+          %{outcome: outcome}
+        )
       end
+
+      events
     after
       unsubscribe(session)
     end

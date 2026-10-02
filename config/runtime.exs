@@ -42,9 +42,14 @@ c3_env = [
   rate_limit_token: {"C3_RATE_LIMIT_TOKEN", &String.to_integer/1},
   rate_limit_ip: {"C3_RATE_LIMIT_IP", &String.to_integer/1},
   max_body_bytes: {"C3_MAX_BODY_BYTES", &String.to_integer/1},
+  attachment_max_bytes: {"C3_ATTACHMENT_MAX_BYTES", &String.to_integer/1},
+  attachments_message_max_bytes: {"C3_ATTACHMENTS_MESSAGE_MAX_BYTES", &String.to_integer/1},
+  attachments_session_max_bytes: {"C3_ATTACHMENTS_SESSION_MAX_BYTES", &String.to_integer/1},
+  attachments_dir: {"C3_ATTACHMENTS_DIR", &String.trim/1},
   claim_ttl: {"C3_CLAIM_TTL_MINUTES", &(String.to_integer(&1) * 60)},
   mcp_allowed_origins: {"C3_MCP_ALLOWED_ORIGINS", csv},
-  admin_token: {"C3_ADMIN_TOKEN", &String.trim/1}
+  admin_token: {"C3_ADMIN_TOKEN", &String.trim/1},
+  metrics_token: {"C3_METRICS_TOKEN", &String.trim/1}
 ]
 
 for {key, {var, parse}} <- c3_env, value <- [System.get_env(var)], value not in [nil, ""] do

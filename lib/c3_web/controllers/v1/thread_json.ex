@@ -4,7 +4,7 @@ defmodule C3Web.V1.ThreadJSON do
   agents `AG2`. `status` is the cached one; `awaiting` and `processing_by` are derived.
   """
   alias C3.Threads
-  alias C3.Threads.{Message, Targets}
+  alias C3.Threads.{Attachment, Message, Targets}
 
   def index(%{threads: threads, states: states}) do
     %{threads: Enum.map(threads, &summary(&1, Map.fetch!(states, &1.id)))}
@@ -41,6 +41,22 @@ defmodule C3Web.V1.ThreadJSON do
     }
   end
 
+  @doc "The metadata of an attachment (its content is at `GET /v1/attachments/{id}`)."
+  def attachment(%Attachment{} = a) do
+    %{
+      id: a.id,
+      filename: a.filename,
+      content_type: a.content_type,
+      size_bytes: a.size_bytes,
+      sha256: a.sha256
+    }
+  end
+
+  defp attachments(%Message{attachments: list}) when is_list(list),
+    do: Enum.map(list, &attachment/1)
+
+  defp attachments(%Message{}), do: []
+
   @doc "A message of `thread`; the request fields only on requests."
   def message(thread, %Message{} = m) do
     base = %{
@@ -49,6 +65,7 @@ defmodule C3Web.V1.ThreadJSON do
       author: m.author_agent && m.author_agent.name,
       body: m.body,
       reply_to: m.reply_to_message && Threads.message_ref(thread, m.reply_to_message),
+      attachments: attachments(m),
       created_at: m.inserted_at
     }
 

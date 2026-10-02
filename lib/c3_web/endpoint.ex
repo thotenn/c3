@@ -43,12 +43,11 @@ defmodule C3Web.Endpoint do
   plug Plug.RequestId
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
 
-  # A request body over 1 MB is a 413 too_large (C3Web.ErrorJSON); a message body is held to
-  # the smaller C3_MAX_BODY_BYTES by C3.Threads.
-  plug Plug.Parsers,
+  # A request body over 1 MB — more on the routes that carry attachments — is a 413 too_large
+  # (C3Web.ErrorJSON); a message body is held to the smaller C3_MAX_BODY_BYTES by C3.Threads.
+  plug C3Web.Plugs.Parsers,
     parsers: [:urlencoded, :multipart, :json],
     pass: ["*/*"],
-    length: 1_048_576,
     json_decoder: Phoenix.json_library()
 
   plug Plug.MethodOverride

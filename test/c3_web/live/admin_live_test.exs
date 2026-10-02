@@ -94,6 +94,13 @@ defmodule C3Web.AdminLiveTest do
       assert has_element?(view, "#session-#{other.id}")
     end
 
+    test "shows the metrics panel", %{conn: conn} do
+      two_agents!()
+      {:ok, view, _html} = live(conn, ~p"/admin")
+      assert has_element?(view, "#metrics", "Open sessions")
+      assert has_element?(view, "#metrics", "Failed joins")
+    end
+
     test "unban lifts the ban and drops the row", %{conn: conn} do
       ban = Security.ban("203.0.113.77", :invalid_secret, nil)
       Security.cache_ban(ban)
@@ -163,6 +170,44 @@ defmodule C3Web.AdminLiveTest do
       view |> element("#purge-session") |> render_click()
       assert_redirect(view, ~p"/admin")
       assert Sessions.get_session_by_code(s.code) == nil
+    end
+
+    test "finish a thread, download its attachment, unlock joins", %{conn: conn} do
+      %{session: s, ag1: ag1} = two_agents!()
+
+      {:ok, _} =
+        Threads.open_thread(ag1, %{
+          "title" => "Logs",
+          "body" => "See attached",
+          "to" => "AG2",
+          "attachments" => [%{"filename" => "run.log", "text" => "ok"}]
+        })
+
+      [%{attachments: [file]} = message] = Threads.list_messages(Threads.get_thread(s, 1))
+
+      {:ok, view, _html} = live(conn, ~p"/admin/sessions/#{s.code}/threads/1")
+      assert has_element?(view, "#attachment-#{message.id}-#{file.id}", "run.log")
+
+      download = conn |> get(~p"/admin/sessions/#{s.code}/attachments/#{file.id}")
+      assert download.status == 200 and download.resp_body == "ok"
+      assert get_resp_header(download, "content-disposition") |> hd() =~ "attachment;"
+
+      # Without the login the download is not served.
+      assert build_conn()
+             |> get(~p"/admin/sessions/#{s.code}/attachments/#{file.id}")
+             |> redirected_to() == "/admin/login"
+
+      view |> element("#finish-thread") |> render_click()
+      assert render(view) =~ "finished; cancelled T1.1"
+      send(view.pid, :reload)
+      refute has_element?(view, "#finish-thread")
+
+      refute has_element?(view, "#unlock-joins")
+      C3.Repo.update_all(C3.Sessions.Session, set: [joins_locked_at: DateTime.utc_now()])
+      {:ok, view, _html} = live(conn, ~p"/admin/sessions/#{s.code}")
+      view |> element("#unlock-joins") |> render_click()
+      assert render(view) =~ "Joins unlocked."
+      refute has_element?(view, "#unlock-joins")
     end
 
     test "an unknown code goes back to the list", %{conn: conn} do

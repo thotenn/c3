@@ -7,7 +7,7 @@ defmodule C3.Threads.Message do
   use C3.Schema
 
   alias C3.Sessions.{Agent, Session}
-  alias C3.Threads.Thread
+  alias C3.Threads.{Attachment, Thread}
 
   schema "messages" do
     field :number, :integer
@@ -25,6 +25,7 @@ defmodule C3.Threads.Message do
     belongs_to :to_agent, Agent
     belongs_to :reply_to_message, __MODULE__
     belongs_to :claimed_by_agent, Agent
+    has_many :attachments, Attachment
 
     timestamps(updated_at: false)
   end

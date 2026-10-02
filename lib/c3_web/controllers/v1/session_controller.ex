@@ -1,5 +1,5 @@
 defmodule C3Web.V1.SessionController do
-  @moduledoc "`/v1/sessions`: create, join, show, leave, close and unlock (spec, *API › Sesión*)."
+  @moduledoc "`/v1/sessions`: create, join, show, leave, close, unlock and rotate the secret (spec, *API › Sesión*)."
   use C3Web, :controller
 
   alias C3.{Sessions, Threads}
@@ -48,6 +48,15 @@ defmodule C3Web.V1.SessionController do
   def unlock(conn, _params) do
     with {:ok, unlocked?} <- Sessions.unlock_joins(conn.assigns.current_agent) do
       json(conn, %{joins_locked: false, unlocked: unlocked?})
+    end
+  end
+
+  def rotate_secret(conn, _params) do
+    with {:ok, %{secret: secret, unlocked: unlocked?}} <-
+           Sessions.rotate_secret(conn.assigns.current_agent) do
+      conn
+      |> put_resp_header("cache-control", "no-store")
+      |> json(%{secret: secret, joins_locked: false, unlocked: unlocked?})
     end
   end
 

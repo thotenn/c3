@@ -53,7 +53,7 @@ defmodule C3Web.AdminAuth do
     end
   end
 
-  @doc "Plug for a controller action that needs the login (none yet beyond the LiveViews)."
+  @doc "Plug for a controller action that needs the login (the admin's attachment download)."
   def require_admin(conn, _opts) do
     if logged_in?(get_session(conn)),
       do: conn,

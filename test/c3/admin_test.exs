@@ -163,4 +163,67 @@ defmodule C3.AdminTest do
     session_id = s.id
     assert_receive {:c3_events, ^session_id, 1}
   end
+
+  describe "F8 actions" do
+    test "finish: the pending requests are cancelled and the holder's watcher hears it" do
+      %{session: session, ag1: ag1, ag2: ag2, thread: thread} = session_with_claim!()
+
+      assert {:ok, %{changed: true, cancelled: ["T1.1"]}} = Admin.finish_thread(thread)
+      assert Repo.reload!(thread).finished_at
+
+      [cancelled] = for e <- Events.list_after(session, 0), e.type == :request_cancelled, do: e
+
+      assert %{"cancelled_by" => "admin", "claimed_by" => "AG2", "reason" => "thread finished"} =
+               cancelled.payload
+
+      assert cancelled.actor_agent_id == nil
+      assert Watch.line(cancelled, ag2) == "cancelled #{cancelled.seq} T1.1 by admin \"Deploy?\""
+      assert Watch.line(cancelled, ag1) == nil
+
+      assert {:ok, %{changed: false}} = Admin.finish_thread(thread)
+    end
+
+    test "an agent's forced finish also emits request.cancelled, and does not wake itself" do
+      %{session: session, ag1: ag1, ag2: ag2, thread: thread} = session_with_claim!()
+
+      {:ok, _} = Threads.finish(ag1, thread, %{"force" => true})
+      [cancelled] = for e <- Events.list_after(session, 0), e.type == :request_cancelled, do: e
+
+      assert cancelled.payload["cancelled_by"] == "AG1"
+      assert Watch.line(cancelled, ag2) =~ ~r/^cancelled \d+ T1.1 by AG1/
+      assert Watch.line(cancelled, ag1) == nil
+      assert [%{type: :request_cancelled}] = Sessions.take_notices(ag2)
+    end
+
+    test "unlock joins as the admin" do
+      %{session: session} = session_with_claim!()
+      Repo.update_all(Session, set: [joins_locked_at: DateTime.utc_now()])
+
+      assert {:ok, true} = Admin.unlock_joins(session)
+      assert {:ok, false} = Admin.unlock_joins(session)
+      refute Repo.reload!(session).joins_locked_at
+
+      [event] = for e <- Events.list_after(session, 0), e.type == :session_joins_unlocked, do: e
+      assert event.payload == %{"by" => "admin"}
+    end
+
+    test "a request or answer with attachments says files <n> on the watch line" do
+      %{session: session, ag1: ag1, ag2: ag2, thread: thread} = session_with_claim!()
+
+      {:ok, _} =
+        Threads.post_message(ag2, thread, %{
+          "kind" => "response",
+          "body" => "Done",
+          "attachments" => [
+            %{"filename" => "a.log", "text" => "1"},
+            %{"filename" => "b.log", "text" => "2"}
+          ]
+        })
+
+      [posted] = for e <- Events.list_after(session, 0), e.type == :message_posted, do: e
+
+      assert Watch.line(posted, ag1) =~
+               ~r/^answer \d+ T1.2 from AG2 resolves T1.1 files 2 "Deploy\?"$/
+    end
+  end
 end

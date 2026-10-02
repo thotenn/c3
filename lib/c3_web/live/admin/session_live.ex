@@ -16,7 +16,6 @@ defmodule C3Web.Admin.SessionLive do
   import C3Web.Admin.Components
 
   alias C3.{Admin, Events, Sessions}
-  alias C3.Threads
   alias C3.Threads.Targets
 
   @page 100
@@ -110,6 +109,15 @@ defmodule C3Web.Admin.SessionLive do
           </dl>
         </div>
         <div class="flex gap-2">
+          <button
+            :if={@session.status == :open && @session.joins_locked_at}
+            id="unlock-joins"
+            phx-click="unlock_joins"
+            data-confirm="Let new agents join this session again?"
+            class="rounded-md border border-warning/50 px-3 py-1.5 text-sm text-warning hover:bg-warning/10 transition-colors"
+          >
+            Unlock joins
+          </button>
           <button
             :if={@session.status == :open}
             id="close-session"
@@ -218,13 +226,24 @@ defmodule C3Web.Admin.SessionLive do
         </div>
 
         <div class="lg:col-span-2">
-          <h2 class="mb-2 text-sm font-semibold uppercase tracking-wide text-base-content/60">
-            <%= if @selected do %>
-              T{@selected.number} · {@selected.title}
-            <% else %>
-              Messages
-            <% end %>
-          </h2>
+          <div class="mb-2 flex items-center justify-between gap-2">
+            <h2 class="text-sm font-semibold uppercase tracking-wide text-base-content/60">
+              <%= if @selected do %>
+                T{@selected.number} · {@selected.title}
+              <% else %>
+                Messages
+              <% end %>
+            </h2>
+            <button
+              :if={@selected && @session.status == :open && is_nil(@selected.finished_at)}
+              id="finish-thread"
+              phx-click="finish_thread"
+              data-confirm={"Finish T#{@selected.number}? Its pending requests are cancelled."}
+              class="rounded border border-base-300 px-2 py-1 text-xs hover:bg-base-200 transition-colors"
+            >
+              Finish thread
+            </button>
+          </div>
           <p
             :if={!@selected}
             id="no-thread"
@@ -258,6 +277,19 @@ defmodule C3Web.Admin.SessionLive do
                 <.time at={message.inserted_at} />
               </div>
               <pre class="mt-2 whitespace-pre-wrap break-words font-sans text-sm">{message.body}</pre>
+              <ul :if={message.attachments != []} class="mt-2 flex flex-wrap gap-2">
+                <li :for={file <- message.attachments}>
+                  <a
+                    id={"attachment-#{message.id}-#{file.id}"}
+                    href={~p"/admin/sessions/#{@session.code}/attachments/#{file.id}"}
+                    class="inline-flex items-center gap-1 rounded border border-base-300 px-2 py-1 text-xs hover:bg-base-200 transition-colors"
+                  >
+                    <.icon name="hero-paper-clip" class="size-3.5" />
+                    {file.filename}
+                    <span class="text-base-content/50">{format_bytes(file.size_bytes)}</span>
+                  </a>
+                </li>
+              </ul>
             </li>
           </ol>
         </div>
@@ -311,6 +343,34 @@ defmodule C3Web.Admin.SessionLive do
         {:noreply, put_flash(socket, :error, "The session was already closed.")}
     end
   end
+
+  def handle_event("unlock_joins", _params, socket) do
+    case Admin.unlock_joins(socket.assigns.session) do
+      {:ok, true} ->
+        session = Admin.get_session(socket.assigns.session.code)
+        {:noreply, socket |> assign(session: session) |> put_flash(:info, "Joins unlocked.")}
+
+      {:ok, false} ->
+        {:noreply, put_flash(socket, :error, "Joins were not locked.")}
+    end
+  end
+
+  def handle_event("finish_thread", _params, %{assigns: %{selected: %{} = thread}} = socket) do
+    case Admin.finish_thread(thread) do
+      {:ok, %{changed: true, cancelled: cancelled}} ->
+        note = if cancelled == [], do: "", else: "; cancelled #{Enum.join(cancelled, ", ")}"
+
+        {:noreply,
+         socket
+         |> assign(selected: %{thread | finished_at: DateTime.utc_now()})
+         |> put_flash(:info, "T#{thread.number} finished#{note}.")}
+
+      {:ok, %{changed: false}} ->
+        {:noreply, put_flash(socket, :error, "The thread was already finished.")}
+    end
+  end
+
+  def handle_event("finish_thread", _params, socket), do: {:noreply, socket}
 
   def handle_event("revoke", %{"id" => id}, socket) do
     agent = Enum.find(Sessions.list_agents(socket.assigns.session), &(to_string(&1.id) == id))
@@ -449,8 +509,15 @@ defmodule C3Web.Admin.SessionLive do
 
   defp reload_selected(%{assigns: %{selected: nil}} = socket), do: socket
 
+  # The thread too: a finish (here or by its agent) changes `finished_at`.
   defp reload_selected(%{assigns: %{selected: thread}} = socket) do
-    stream(socket, :messages, Threads.list_messages(thread), reset: true)
+    case Admin.get_thread(socket.assigns.session, thread.number) do
+      {thread, messages} ->
+        socket |> assign(selected: thread) |> stream(:messages, messages, reset: true)
+
+      nil ->
+        socket
+    end
   end
 
   defp last_seq([newest | _]), do: newest.seq

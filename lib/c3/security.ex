@@ -60,6 +60,7 @@ defmodule C3.Security do
         banned_until: LocalTime.next_midnight(now)
       })
       |> Repo.insert!()
+      |> tap(fn _ -> C3.Metrics.emit([:ip, :banned], %{reason: reason}) end)
     end
   end
 
@@ -91,6 +92,7 @@ defmodule C3.Security do
       |> Map.update(:attempted_code, "", &String.slice(to_string(&1), 0, 32))
     )
     |> Repo.insert!()
+    |> tap(fn _ -> C3.Metrics.emit([:join, :failed], %{reason: reason}) end)
   end
 
   @doc "How many unknown codes `ip` has tried since the local day started."

@@ -11,7 +11,7 @@ defmodule C3.Sessions do
   """
   import Ecto.Query
 
-  alias C3.{Config, Credentials, Events, Repo, Security, Threads}
+  alias C3.{Config, Credentials, Events, Metrics, Repo, Security, Threads}
   alias C3.Sessions.{Agent, IdempotencyKey, Session}
 
   @type meta :: %{ip: String.t(), user_agent: String.t() | nil}
@@ -59,7 +59,12 @@ defmodule C3.Sessions do
          {:ok, agent_label} <- validate_agent_label(attrs) do
       secret = Credentials.generate_secret()
       secret_hash = Credentials.hash_secret(secret)
-      insert_session(attrs["label"], secret_hash, agent_label, meta, now, secret, 3)
+
+      with {:ok, _} = created <-
+             insert_session(attrs["label"], secret_hash, agent_label, meta, now, secret, 3) do
+        Metrics.emit([:session, :created])
+        created
+      end
     end
   end
 
@@ -187,9 +192,15 @@ defmodule C3.Sessions do
     {:error, :invalid_secret}
   end
 
-  # Failures before the last unlock do not count again, or the next one would relock at once.
+  # Failures before the last unlock or rotation do not count again, or the next one would
+  # relock at once.
   defp maybe_lock_joins(session, now) do
-    since = Events.last_at(session, :session_joins_unlocked)
+    since =
+      [:session_joins_unlocked, :session_secret_rotated]
+      |> Enum.map(&Events.last_at(session, &1))
+      |> Enum.reject(&is_nil/1)
+      |> Enum.max(DateTime, fn -> nil end)
+
     ips = Security.invalid_secret_ips(session, since)
 
     if ips >= Config.get(:join_lock_ips) do
@@ -208,23 +219,57 @@ defmodule C3.Sessions do
   Lifts the join lock of the agent's session. Idempotent: `{:ok, false}` when it was not
   locked, `{:ok, true}` when this call unlocked it.
   """
-  def unlock_joins(%Agent{} = agent) do
+  def unlock_joins(%Agent{} = agent), do: unlock_joins(%Session{id: agent.session_id}, agent)
+
+  @doc "`unlock_joins/1` as `by` — an agent, or `:admin` for the admin pages."
+  def unlock_joins(%Session{id: session_id}, by) do
     now = now()
+    {actor, name} = if by == :admin, do: {nil, "admin"}, else: {by, by.name}
 
     Repo.transaction(fn ->
       {unlocked, _} =
         Session
-        |> where([s], s.id == ^agent.session_id and not is_nil(s.joins_locked_at))
+        |> where([s], s.id == ^session_id and s.status == :open and not is_nil(s.joins_locked_at))
         |> Repo.update_all(set: [joins_locked_at: nil, updated_at: now])
 
       if unlocked == 1 do
-        Events.append!(%Session{id: agent.session_id}, :session_joins_unlocked,
-          actor: agent,
-          payload: %{by: agent.name}
+        Events.append!(%Session{id: session_id}, :session_joins_unlocked,
+          actor: actor,
+          payload: %{by: name}
         )
       end
 
       unlocked == 1
+    end)
+  end
+
+  @doc """
+  Rotates the security number of the agent's session: the old one stops working for joins,
+  the agents already in keep their tokens, and a join lock is lifted — a lock protects the
+  old number, and the new one has not been tried by anyone. Failures before the rotation no
+  longer count toward a new lock. Emits `session.secret_rotated` (`by`, `unlocked`), never
+  with the number. Returns `{:ok, %{secret, unlocked}}`, the only place the new number exists.
+  """
+  def rotate_secret(%Agent{} = agent) do
+    now = now()
+    secret = Credentials.generate_secret()
+    secret_hash = Credentials.hash_secret(secret)
+
+    Repo.transaction(fn ->
+      session = Repo.get!(Session, agent.session_id)
+      if session.status == :closed, do: Repo.rollback(:session_closed)
+      unlocked = not is_nil(session.joins_locked_at)
+
+      Session
+      |> where(id: ^session.id)
+      |> Repo.update_all(set: [secret_hash: secret_hash, joins_locked_at: nil, updated_at: now])
+
+      Events.append!(session, :session_secret_rotated,
+        actor: agent,
+        payload: %{by: agent.name, unlocked: unlocked}
+      )
+
+      %{secret: secret, unlocked: unlocked}
     end)
   end
 
@@ -318,6 +363,7 @@ defmodule C3.Sessions do
       )
 
     if closed == 0, do: Repo.rollback(:session_closed)
+    Metrics.emit([:session, :closed], %{reason: reason})
 
     Agent
     |> where([a], a.session_id == ^session_id and a.status == :active)

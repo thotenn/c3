@@ -26,6 +26,8 @@ defmodule C3Web.MCP.ParityTest do
     "c3_reopen" => {:post, "/threads/:thread/reopen"},
     "c3_events" => {:get, "/sessions/:code/events"},
     "c3_unlock" => {:post, "/sessions/:code/unlock"},
+    "c3_rotate_secret" => {:post, "/sessions/:code/rotate-secret"},
+    "c3_get_attachment" => {:get, "/attachments/:attachment"},
     "c3_leave" => {:post, "/sessions/:code/leave"},
     "c3_close_session" => {:post, "/sessions/:code/close"}
   }
@@ -75,6 +77,23 @@ defmodule C3Web.MCP.ParityTest do
     {:a, "c3_events", %{"after" => 0, "limit" => 5}},
     {:a, "c3_events", %{"after" => 3}},
     {:b, "c3_unlock", %{}},
+    {:a, "c3_post",
+     %{
+       "thread" => "T1",
+       "kind" => "note",
+       "body" => "the log",
+       "attachments" => [%{"filename" => "run.log", "text" => "ok\n"}]
+     }},
+    {:a, "c3_post",
+     %{
+       "thread" => "T1",
+       "kind" => "note",
+       "body" => "bad",
+       "attachments" => [%{"filename" => "x", "base64" => "%%%"}]
+     }},
+    {:b, "c3_get_attachment", %{"attachment_id" => :attachment}},
+    {:b, "c3_get_attachment", %{"attachment_id" => 999_999_999}},
+    {:a, "c3_rotate_secret", %{}},
     {:none, "c3_inbox", %{}},
     {:bad, "c3_inbox", %{}},
     {:none, "c3_join_session", %{"session_code" => :code, "secret" => "000000"}},
@@ -138,6 +157,9 @@ defmodule C3Web.MCP.ParityTest do
   defp learn(ctx, "c3_join_session", %{"agent" => %{"name" => "AG2", "token" => token}}),
     do: Map.put(ctx, :b, token)
 
+  defp learn(ctx, "c3_post", %{"messages" => [%{"attachments" => [%{"id" => id} | _]} | _]}),
+    do: Map.put(ctx, :attachment, id)
+
   defp learn(ctx, _name, _body), do: ctx
 
   defp rest_call(conn, name, args) do
@@ -146,13 +168,15 @@ defmodule C3Web.MCP.ParityTest do
     {key, args} = Map.pop(args, "idempotency_key")
     {code, args} = Map.pop(args, "session_code")
     {thread, args} = Map.pop(args, "thread")
+    {attachment, args} = Map.pop(args, "attachment_id")
     code = code || (route =~ ":code" && code_of(token))
 
     path =
       "/v1" <>
         (route
          |> String.replace(":code", to_string(code))
-         |> String.replace(":thread", to_string(thread)))
+         |> String.replace(":thread", to_string(thread))
+         |> String.replace(":attachment", to_string(attachment)))
 
     conn =
       conn
@@ -162,12 +186,16 @@ defmodule C3Web.MCP.ParityTest do
 
     conn =
       case method do
-        :get -> get(conn, path, if(name == "c3_events", do: Map.put(args, "wait", 0), else: args))
+        :get -> get(conn, path, query(name, args))
         :post -> post(conn, path, args)
       end
 
     {conn.status, Jason.decode!(conn.resp_body)}
   end
+
+  defp query("c3_events", args), do: Map.put(args, "wait", 0)
+  defp query("c3_get_attachment", args), do: Map.put(args, "format", "json")
+  defp query(_name, args), do: args
 
   # The session code a token belongs to, as the agent would remember it.
   defp code_of(token) do
@@ -180,6 +208,8 @@ defmodule C3Web.MCP.ParityTest do
   defp mask(%{} = map) do
     Map.new(map, fn
       {key, value} when key in @masked and not is_nil(value) -> {key, "<masked>"}
+      # An attachment's id is a row id: it differs between the two runs.
+      {"id", value} when is_integer(value) -> {"id", "<masked>"}
       {key, value} -> {key, mask(value)}
     end)
   end

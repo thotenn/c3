@@ -10,18 +10,19 @@ defmodule C3.Sessions.Lifecycle do
       apply).
     * `purge/1` — deletes the sessions closed more than `retention_days` ago (`0` = at the
       first sweep after the close), in the explicit order of `schema.md` (*Ciclo de vida de
-      los datos*); `purge_session/1` deletes one, for the admin.
+      los datos*), then the session's attachment files; `purge_session/1` deletes one, for
+      the admin.
 
   The idle close re-checks `last_activity_at` in its `UPDATE`, so a request that lands
   between the scan and the close keeps the session open.
   """
   import Ecto.Query
 
-  alias C3.{Config, Events, Repo, Sessions}
+  alias C3.{Attachments, Config, Events, Repo, Sessions}
   alias C3.Events.Event
   alias C3.Security.JoinFailure
   alias C3.Sessions.{Agent, IdempotencyKey, Session}
-  alias C3.Threads.{Message, Thread}
+  alias C3.Threads.{Attachment, Message, Thread}
 
   @doc "Emits the due `session.closing_soon` warnings. Returns how many."
   def warn_closing(now \\ DateTime.utc_now()) do
@@ -109,21 +110,28 @@ defmodule C3.Sessions.Lifecycle do
   session, `{:error, :not_found}` for one already gone.
   """
   def purge_session(session_id) do
-    Repo.transaction(fn ->
-      case Repo.get(Session, session_id) do
-        %Session{status: :closed} -> delete_session!(session_id)
-        %Session{} -> Repo.rollback(:not_closed)
-        nil -> Repo.rollback(:not_found)
-      end
-    end)
+    result =
+      Repo.transaction(fn ->
+        case Repo.get(Session, session_id) do
+          %Session{status: :closed} -> delete_session!(session_id)
+          %Session{} -> Repo.rollback(:not_closed)
+          nil -> Repo.rollback(:not_found)
+        end
+      end)
+
+    # The files go once their rows are gone for good; a crash in between leaves them to
+    # `Attachments.sweep_orphans/1`.
+    with {:ok, _} <- result, do: Attachments.delete_session_files(session_id)
+    result
   end
 
   # Children first, by hand: SQLite's cascade order with the cross FKs to `agents` is not
-  # to be trusted; the ON DELETE CASCADE stays as a safety net. Attachments join in F8.
+  # to be trusted; the ON DELETE CASCADE stays as a safety net.
   defp delete_session!(session_id) do
     agents = from a in Agent, where: a.session_id == ^session_id, select: a.id
 
     Repo.delete_all(from k in IdempotencyKey, where: k.agent_id in subquery(agents))
+    Repo.delete_all(from a in Attachment, where: a.session_id == ^session_id)
     Repo.delete_all(from e in Event, where: e.session_id == ^session_id)
     Repo.delete_all(from m in Message, where: m.session_id == ^session_id)
     Repo.delete_all(from t in Thread, where: t.session_id == ^session_id)

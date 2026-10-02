@@ -24,6 +24,7 @@ erl_crash.dump
 
 # Ignore package tarball (built via "mix hex.build").
 c3-*.tar
+c3-*.tar.gz
 
 # Ignore assets that are produced by build tools.
 /priv/static/assets/

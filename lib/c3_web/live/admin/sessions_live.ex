@@ -86,6 +86,34 @@ defmodule C3Web.Admin.SessionsLive do
         </table>
       </div>
 
+      <h2 class="pt-4 text-lg font-semibold tracking-tight">
+        Metrics <span class="text-sm font-normal text-base-content/60">since the node started</span>
+      </h2>
+      <dl id="metrics" class="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <.stat label="Open sessions" value={@metrics.gauges.sessions_open} />
+        <.stat label="Active agents" value={@metrics.gauges.agents_active} />
+        <.stat label="Bans in force" value={@metrics.gauges.ip_bans_active} />
+        <.stat label="Attachments" value={format_bytes(@metrics.gauges.attachments_bytes)} />
+        <.stat label="Sessions created" value={@metrics.sessions_created} />
+        <.stat
+          label="Sessions closed"
+          value={sum(@metrics.sessions_closed)}
+          detail={by_label(@metrics.sessions_closed)}
+        />
+        <.stat
+          label="Failed joins"
+          value={sum(@metrics.join_failures)}
+          detail={by_label(@metrics.join_failures)}
+        />
+        <.stat label="Bans issued" value={sum(@metrics.ip_bans)} detail={by_label(@metrics.ip_bans)} />
+        <.stat
+          :for={{outcome, lp} <- Enum.sort(@metrics.long_poll)}
+          label={"Long-polls · #{outcome}"}
+          value={lp.count}
+          detail={"mean #{Float.round(lp.mean_seconds, 2)} s"}
+        />
+      </dl>
+
       <h2 class="pt-4 text-lg font-semibold tracking-tight">IP bans in force</h2>
       <div class="overflow-x-auto rounded-lg border border-base-300">
         <table class="w-full text-sm">
@@ -126,6 +154,27 @@ defmodule C3Web.Admin.SessionsLive do
     """
   end
 
+  attr :label, :string, required: true
+  attr :value, :any, required: true
+  attr :detail, :string, default: nil
+
+  defp stat(assigns) do
+    ~H"""
+    <div class="rounded-lg border border-base-300 px-3 py-2">
+      <dt class="text-xs uppercase tracking-wide text-base-content/60">{@label}</dt>
+      <dd class="text-xl font-semibold tabular-nums">{@value}</dd>
+      <dd :if={@detail && @detail != ""} class="truncate text-xs text-base-content/60" title={@detail}>
+        {@detail}
+      </dd>
+    </div>
+    """
+  end
+
+  defp sum(by_label), do: by_label |> Map.values() |> Enum.sum()
+
+  defp by_label(by_label),
+    do: by_label |> Enum.sort() |> Enum.map_join(" · ", fn {k, v} -> "#{k} #{v}" end)
+
   @impl true
   def handle_event("unban", %{"ip" => ip}, socket) do
     {:ok, lifted} = Admin.unban(ip)
@@ -158,5 +207,6 @@ defmodule C3Web.Admin.SessionsLive do
     )
     |> stream(:sessions, rows, reset: true)
     |> stream(:bans, Admin.list_active_bans(), reset: true)
+    |> assign(metrics: C3.Metrics.snapshot())
   end
 end

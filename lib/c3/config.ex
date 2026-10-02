@@ -21,9 +21,16 @@ defmodule C3.Config do
   | `:rate_limit_token` | `C3_RATE_LIMIT_TOKEN` | `120` requests per minute and token |
   | `:rate_limit_ip` | `C3_RATE_LIMIT_IP` | `300` requests per minute and IP |
   | `:max_body_bytes` | `C3_MAX_BODY_BYTES` | `65536` — a message body, in bytes; over it → `413` |
+  | `:attachment_max_bytes` | `C3_ATTACHMENT_MAX_BYTES` | 5 MiB — one attached file |
+  | `:attachments_message_max_bytes` | `C3_ATTACHMENTS_MESSAGE_MAX_BYTES` | 10 MiB — every file of one post together |
+  | `:attachments_session_max_bytes` | `C3_ATTACHMENTS_SESSION_MAX_BYTES` | 50 MiB — every file of a session together |
+  | `:attachments_per_message` | — | `10` files per post |
+  | `:attachment_inline_max_bytes` | — | 1 MiB — the largest file `GET /v1/attachments/{id}?format=json` (and `c3_get_attachment`) returns inline |
+  | `:attachments_dir` | `C3_ATTACHMENTS_DIR` | `nil` = `attachments/` next to the SQLite file (`/data/attachments` in the image) |
   | `:claim_ttl` | `C3_CLAIM_TTL_MINUTES` | 30 min, in seconds — a claim whose agent stays silent that long goes back to `open` |
   | `:mcp_allowed_origins` | `C3_MCP_ALLOWED_ORIGINS` | `[]` — browser origins allowed on `/mcp` (`https://app.example.com`); a request with any other `Origin` gets `403`. Agents send none |
   | `:admin_token` | `C3_ADMIN_TOKEN` | `nil` — the token of the admin pages (`/admin`), 32 characters or more; unset = no admin, `/admin` is a `404` |
+  | `:metrics_token` | `C3_METRICS_TOKEN` | `nil` — bearer token of `GET /metrics` (Prometheus text), 32 characters or more; unset = `/metrics` is a `404` |
   | `:admin_session_ttl` | — | 12 h, in seconds — how long an admin login lasts |
   | `:last_seen_throttle` | — | `60` seconds between two `last_seen_at` writes of an agent, and between two `last_activity_at` writes of a session |
   | `:sweeper` | — | `true` — run `C3.Sweeper` (off in test, where the sandbox owns the DB) |
@@ -47,9 +54,16 @@ defmodule C3.Config do
     rate_limit_ip: 300,
     rate_limit_window_ms: 60_000,
     max_body_bytes: 65_536,
+    attachment_max_bytes: 5 * 1024 * 1024,
+    attachments_message_max_bytes: 10 * 1024 * 1024,
+    attachments_session_max_bytes: 50 * 1024 * 1024,
+    attachments_per_message: 10,
+    attachment_inline_max_bytes: 1024 * 1024,
+    attachments_dir: nil,
     claim_ttl: 30 * 60,
     mcp_allowed_origins: [],
     admin_token: nil,
+    metrics_token: nil,
     admin_session_ttl: 12 * 3600,
     last_seen_throttle: 60,
     sweeper: true,
@@ -58,6 +72,25 @@ defmodule C3.Config do
 
   @doc "The value of `key`, or its default."
   def get(key), do: Application.get_env(:c3, key, Keyword.fetch!(@defaults, key))
+
+  @doc "The directory attachments are stored in: `:attachments_dir`, or `attachments/` next to the database."
+  def attachments_dir do
+    case get(:attachments_dir) do
+      nil ->
+        Path.join(Path.dirname(Application.fetch_env!(:c3, C3.Repo)[:database]), "attachments")
+
+      dir ->
+        dir
+    end
+  end
+
+  @doc """
+  The largest request body the parser accepts on the routes that carry attachments: the
+  base64 of `attachments_message_max_bytes` plus room for the message itself.
+  """
+  def attachments_request_max_bytes do
+    div(get(:attachments_message_max_bytes) * 4, 3) + get(:max_body_bytes) + 64 * 1024
+  end
 
   @doc "Fails fast at boot on a setting that would only break at the first request."
   def validate! do
@@ -83,10 +116,21 @@ defmodule C3.Config do
       raise ArgumentError, "C3_RETENTION_DAYS must be 0 or more, got #{get(:retention_days)}"
     end
 
-    case get(:admin_token) do
-      nil -> :ok
-      token when byte_size(token) >= 32 -> :ok
-      _ -> raise ArgumentError, "C3_ADMIN_TOKEN must be 32 characters or more (make secret)"
+    for {key, var} <- [admin_token: "C3_ADMIN_TOKEN", metrics_token: "C3_METRICS_TOKEN"] do
+      case get(key) do
+        nil -> :ok
+        token when byte_size(token) >= 32 -> :ok
+        _ -> raise ArgumentError, "#{var} must be 32 characters or more (make secret)"
+      end
+    end
+
+    for key <- [
+          :attachment_max_bytes,
+          :attachments_message_max_bytes,
+          :attachments_session_max_bytes
+        ],
+        get(key) <= 0 do
+      raise ArgumentError, "#{inspect(key)} must be positive, got #{inspect(get(key))}"
     end
 
     for key <- [:trusted_proxies, :ip_allowlist], cidr <- get(key) do

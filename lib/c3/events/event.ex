@@ -21,6 +21,7 @@ defmodule C3.Events.Event do
     security_join_failed: "security.join_failed",
     session_joins_locked: "session.joins_locked",
     session_joins_unlocked: "session.joins_unlocked",
+    session_secret_rotated: "session.secret_rotated",
     session_closing_soon: "session.closing_soon",
     session_closed: "session.closed"
   ]

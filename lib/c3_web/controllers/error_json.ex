@@ -10,6 +10,7 @@ defmodule C3Web.ErrorJSON do
     "401" => "unauthorized",
     "403" => "forbidden",
     "404" => "not_found",
+    "406" => "invalid_request",
     "409" => "conflict",
     "410" => "session_closed",
     "413" => "too_large",

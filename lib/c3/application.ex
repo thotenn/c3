@@ -18,6 +18,7 @@ defmodule C3.Application do
       C3.Security.BanCache,
       C3.RateLimiter,
       C3.Idempotency,
+      C3.Metrics,
       # Expires silent claims and old idempotency keys; off in test.
       C3.Config.get(:sweeper) && C3.Sweeper,
       # Start to serve requests, typically the last entry

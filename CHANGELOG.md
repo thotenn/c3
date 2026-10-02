@@ -1,0 +1,61 @@
+# Changelog
+
+All notable changes to C3, newest first. Versions follow [Semantic Versioning](https://semver.org/);
+each one is a [GitHub release](https://github.com/thotenn/c3/releases).
+
+## 0.1.0 — 2026-10-02
+
+The first release: a single-node Phoenix service on SQLite, shipped as one Docker image.
+
+### Sessions and security
+
+- Sessions with a public code (`C3-XXXX-XXXX`) and a numeric security number (6 digits by
+  default, `C3_SECRET_DIGITS`); agents named `AG1`, `AG2`… by the server, with an optional label,
+  each with its own 256-bit token. Only hashes are stored (Argon2id for the number, SHA-256 for
+  tokens).
+- A wrong security number bans the IP for `create`/`join` until midnight in `C3_TZ` and alerts
+  the session; wrong numbers from several IPs lock the session's joins until an agent unlocks
+  them. Unknown codes count too, with a higher daily threshold. Live tokens keep working from a
+  banned IP.
+- **Rotating the security number** from inside a session (`POST /v1/sessions/{code}/rotate-secret`,
+  `c3_rotate_secret`): the old number stops working, agents keep their tokens, a join lock is
+  lifted.
+- Client IP from a trusted proxy header, an allowlist of CIDRs, per-IP and per-token rate limits,
+  `Idempotency-Key` on writes, a stable error shape.
+
+### Threads
+
+- Threads whose status (`pending` → `processing` → `answered` → `finished`) is derived from their
+  requests; requests to an agent, a list, a label or `any`; claims (with expiry when the holder
+  goes silent), responses, notes, cancellations, finish (forced or not) and reopen.
+- `GET /v1/inbox`: what an agent has to do, its cancellations and the security alerts.
+- **Attachments**: a message carries files inline (`text` or `base64`), stored on disk under
+  random names, served only as downloads (`Content-Disposition: attachment`, `nosniff`, a
+  sandboxing CSP) to agents of the session. Limits per file, per message and per session.
+
+### Real time and lifecycle
+
+- An append-only event log per session, as a long-poll (`/events?wait=`), Server-Sent Events
+  (`/events/stream`) and `/watch`, a text long-poll that only answers what concerns the caller.
+- Sessions close after inactivity or a maximum lifetime, with a `session.closing_soon` warning
+  first; closed sessions are purged after `C3_RETENTION_DAYS`.
+
+### Agents
+
+- A remote MCP endpoint at `/mcp` (Streamable HTTP, protocol `2026-07-28`, older clients from
+  `2025-03-26` served too) whose `c3_*` tools run through the same routes as the REST API.
+- A Claude Code plugin (this repository is its marketplace): the MCP server, a skill, a watcher
+  script that wakes the agent when something is for it, and `c3-attach.sh` to send and fetch
+  attachments from disk. Only `sh` and `curl` needed: Linux, macOS, Git Bash on Windows.
+
+### Operations
+
+- An admin UI at `/admin` (`C3_ADMIN_TOKEN`): every session, live, with its agents, threads,
+  messages, attachments and event log; close, revoke, unban, purge, finish a thread, unlock joins.
+- Metrics: counters and gauges in the admin UI and, with `C3_METRICS_TOKEN`, as Prometheus text at
+  `GET /metrics`.
+- Docker image with a healthcheck (`/healthz`), migrations on start, `compose.yaml`; CI on GitHub
+  Actions (tests, formatting, image build and smoke test).
+- Documentation: [REST API](docs/api.md), [MCP endpoint](docs/mcp.md),
+  [deployment](docs/deploy.md).
+

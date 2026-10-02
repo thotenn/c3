@@ -183,10 +183,20 @@ defmodule C3Web.V1.ThreadControllerTest do
       assert %{"error" => %{"code" => "too_large"}} =
                open(s, %{"title" => "t", "body" => big, "to" => "AG2"}) |> json_response(413)
 
+      # 1 MB anywhere; more where attachments come inline, up to the attachments' cap.
       assert_error_sent 413, fn ->
         authed(s.t1)
         |> put_req_header("content-type", "application/json")
-        |> post(~p"/v1/sessions/#{s.code}/threads", String.duplicate(" ", 1_100_000))
+        |> post(~p"/v1/sessions/#{s.code}/leave", String.duplicate(" ", 1_100_000))
+      end
+
+      assert_error_sent 413, fn ->
+        authed(s.t1)
+        |> put_req_header("content-type", "application/json")
+        |> post(
+          ~p"/v1/sessions/#{s.code}/threads",
+          String.duplicate(" ", C3.Config.attachments_request_max_bytes() + 1)
+        )
       end
     end
   end

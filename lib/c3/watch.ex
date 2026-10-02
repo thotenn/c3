@@ -19,7 +19,8 @@ defmodule C3.Watch do
     * the close of the session, its own leave, or the admin revoking it → `stop`
 
   What the agent did itself never wakes it. Lines have the form
-  `<kind> <seq> <facts…>`; the only free text, a thread title, goes last, quoted, on one
+  `<kind> <seq> <facts…>` — a `request` or `answer` with attachments ends its facts with
+  `files <n>`; the only free text, a thread title, goes last, quoted, on one
   line and cut to 80 characters.
   """
   alias C3.Events.Event
@@ -39,7 +40,7 @@ defmodule C3.Watch do
     |> Enum.zip(p["requests"])
     |> Enum.find(fn {to, _ref} -> for_me?(to, by, me) end)
     |> case do
-      {_to, ref} -> {"request", [ref, "from", by]}
+      {_to, ref} -> {"request", [ref, "from", by | files(p)]}
       nil -> nil
     end
   end
@@ -47,11 +48,13 @@ defmodule C3.Watch do
   defp relevant(:message_posted, %{"author" => by} = p, me) when by != me.name do
     case p["kind"] do
       "request" ->
-        if for_me?(p["to"], by, me), do: {"request", [p["message"], "from", by]}
+        if for_me?(p["to"], by, me), do: {"request", [p["message"], "from", by | files(p)]}
 
       "response" ->
         if me.name in (p["resolved_for"] || []),
-          do: {"answer", [p["message"], "from", by, "resolves", Enum.join(p["resolved"], ",")]}
+          do:
+            {"answer",
+             [p["message"], "from", by, "resolves", Enum.join(p["resolved"], ",") | files(p)]}
 
       _ ->
         nil
@@ -89,6 +92,10 @@ defmodule C3.Watch do
   defp relevant(:agent_revoked, %{"name" => name}, %{name: name}), do: {"stop", ["revoked"]}
 
   defp relevant(_type, _payload, _me), do: nil
+
+  # `files <n>` when the message carries attachments.
+  defp files(%{"attachments" => [_ | _] = names}), do: ["files", length(names)]
+  defp files(_payload), do: []
 
   # A request target (`"AG2"`, `"label:x"`, `"any"`) that `me` may take; `any` excludes
   # the author.

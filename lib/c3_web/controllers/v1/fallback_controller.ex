@@ -30,6 +30,10 @@ defmodule C3Web.V1.FallbackController do
     ApiError.send_error(conn, 404, "not_found", "No such thread in this session")
   end
 
+  def call(conn, {:error, :attachment_not_found}) do
+    ApiError.send_error(conn, 404, "not_found", "No such attachment in this session")
+  end
+
   def call(conn, {:error, {:invalid, message, details}}) do
     ApiError.send_error(conn, 422, "invalid_request", message, details)
   end

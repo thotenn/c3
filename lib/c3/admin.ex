@@ -133,6 +133,15 @@ defmodule C3.Admin do
     Repo.transaction(fn -> Sessions.close_session!(id, :admin, :admin, DateTime.utc_now()) end)
   end
 
+  @doc "Finishes a thread, cancelling its pending requests. `{:ok, %{changed, cancelled}}`."
+  def finish_thread(%Thread{} = thread), do: Threads.admin_finish(thread)
+
+  @doc """
+  Lifts the join lock of an open session, as `unlock` does for an agent (`by: "admin"`).
+  `{:ok, true}` when it was locked, `{:ok, false}` when it was not.
+  """
+  def unlock_joins(%Session{} = session), do: Sessions.unlock_joins(session, :admin)
+
   @doc "Revokes an active agent. `{:ok, released}` or `{:error, :not_active}`."
   def revoke_agent(%Agent{} = agent), do: Sessions.revoke(agent)
 

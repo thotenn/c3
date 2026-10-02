@@ -1,6 +1,7 @@
 defmodule C3Web.Plugs.RateLimit do
   @moduledoc """
-  Per-minute request limits, `429 rate_limited` with `retry-after` once exceeded.
+  Per-minute request limits, `429 rate_limited` with `retry-after` once exceeded (plain
+  text on the admin pages).
 
     * `plug RateLimit, :ip` — per client IP (`C3_RATE_LIMIT_IP`); needs `RealIp` first.
     * `plug RateLimit, :token` — per agent (`C3_RATE_LIMIT_TOKEN`); needs `AgentAuth` first.
@@ -34,9 +35,21 @@ defmodule C3Web.Plugs.RateLimit do
       {:error, retry_after} ->
         conn
         |> put_resp_header("retry-after", Integer.to_string(retry_after))
-        |> ApiError.send_error(429, "rate_limited", "Too many requests", %{
-          retry_after: retry_after
-        })
+        |> reject(retry_after)
     end
+  end
+
+  # The admin pages are a browser's: plain text, not the JSON error of the API.
+  defp reject(%Plug.Conn{path_info: ["admin" | _]} = conn, retry_after) do
+    conn
+    |> put_resp_content_type("text/plain")
+    |> send_resp(429, "Too many requests. Try again in #{retry_after} s.")
+    |> halt()
+  end
+
+  defp reject(conn, retry_after) do
+    ApiError.send_error(conn, 429, "rate_limited", "Too many requests", %{
+      retry_after: retry_after
+    })
   end
 end

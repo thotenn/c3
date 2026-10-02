@@ -18,7 +18,7 @@ defmodule C3.Threads do
   """
   import Ecto.Query
 
-  alias C3.{Config, Events, Repo}
+  alias C3.{Attachments, Config, Events, Repo}
   alias C3.Sessions.{Agent, Session}
   alias C3.Threads.{Derivation, Message, Targets, Thread}
 
@@ -86,7 +86,13 @@ defmodule C3.Threads do
 
   @doc "Preloads what the JSON of a message shows (its agents and `reply_to`)."
   def preload_messages(messages) do
-    Repo.preload(messages, [:author_agent, :to_agent, :claimed_by_agent, :reply_to_message])
+    Repo.preload(messages, [
+      :author_agent,
+      :to_agent,
+      :claimed_by_agent,
+      :reply_to_message,
+      attachments: from(a in C3.Threads.Attachment, order_by: a.id)
+    ])
   end
 
   @doc "The derived state (`C3.Threads.Derivation`) of each thread, by thread id."
@@ -125,48 +131,56 @@ defmodule C3.Threads do
   ## Writes
 
   @doc """
-  Opens a thread: `attrs` `"title"`, `"body"` and `"to"` (omitted = `any`). Creates the thread
-  and one request per target, and emits `thread.opened`.
+  Opens a thread: `attrs` `"title"`, `"body"`, `"to"` (omitted = `any`) and `"attachments"`
+  (`C3.Attachments`, shared by every request). Creates the thread and one request per
+  target, and emits `thread.opened`.
   """
   def open_thread(%Agent{} = author, attrs) do
     now = now()
 
     with :ok <- check_body_size(attrs["body"]),
+         {:ok, files} <- Attachments.prepare(attrs["attachments"]),
          {:ok, targets} <- Targets.resolve(attrs["to"], author) do
-      Repo.transaction(fn ->
-        thread =
-          %Thread{session_id: author.session_id, opened_by_agent_id: author.id}
-          |> Thread.changeset(%{
-            number: next_thread_number!(author.session_id),
-            title: attrs["title"],
-            last_message_at: now
-          })
-          |> Repo.insert()
-          |> rollback_on_error()
+      Attachments.with_cleanup(fn ->
+        Repo.transaction(fn ->
+          thread =
+            %Thread{session_id: author.session_id, opened_by_agent_id: author.id}
+            |> Thread.changeset(%{
+              number: next_thread_number!(author.session_id),
+              title: attrs["title"],
+              last_message_at: now
+            })
+            |> Repo.insert()
+            |> rollback_on_error()
 
-        requests = insert_requests!(thread, author, attrs["body"], targets, nil, 1)
+          requests = insert_requests!(thread, author, attrs["body"], targets, nil, 1)
+          Attachments.store!(thread.session_id, Enum.map(requests, &elem(&1, 0)), files, now)
 
-        Events.append!(session(thread), :thread_opened,
-          actor: author,
-          thread: thread,
-          payload: %{
-            thread: thread_ref(thread),
-            title: thread.title,
-            opened_by: author.name,
-            to: Enum.map(requests, &elem(&1, 1)),
-            requests: Enum.map(requests, &message_ref(thread, elem(&1, 0)))
-          }
-        )
+          Events.append!(session(thread), :thread_opened,
+            actor: author,
+            thread: thread,
+            payload:
+              %{
+                thread: thread_ref(thread),
+                title: thread.title,
+                opened_by: author.name,
+                to: Enum.map(requests, &elem(&1, 1)),
+                requests: Enum.map(requests, &message_ref(thread, elem(&1, 0)))
+              }
+              |> with_attachments(files)
+          )
 
-        {thread, _state} = apply_state!(thread, nil, author)
-        thread
+          {thread, _state} = apply_state!(thread, nil, author)
+          thread
+        end)
       end)
     end
   end
 
   @doc """
   Posts to a thread: `attrs` `"kind"` (`request`, `response` or `note`), `"body"`, `"to"`
-  (requests only; one request per target) and `"reply_to"` (`T3.2` or `2`).
+  (requests only; one request per target), `"reply_to"` (`T3.2` or `2`) and `"attachments"`
+  (`C3.Attachments`; every request of the post carries them).
 
   A `response` resolves the request it replies to — or, without `reply_to`, every request of
   the thread the author may answer — claiming it on the way if nobody had. Returns
@@ -177,66 +191,72 @@ defmodule C3.Threads do
 
     with {:ok, kind} <- parse_kind(attrs["kind"]),
          :ok <- check_body_size(attrs["body"]),
+         {:ok, files} <- Attachments.prepare(attrs["attachments"]),
          {:ok, targets} <- targets_for(kind, attrs["to"], author) do
-      Repo.transaction(fn ->
-        thread = lock_thread!(thread_id, now)
-        if thread.finished_at, do: rollback_finished(thread)
+      Attachments.with_cleanup(fn ->
+        Repo.transaction(fn ->
+          thread = lock_thread!(thread_id, now)
+          if thread.finished_at, do: rollback_finished(thread)
 
-        reply_to = fetch_reply_to!(thread, attrs["reply_to"])
-        number = next_message_number!(thread)
+          reply_to = fetch_reply_to!(thread, attrs["reply_to"])
+          number = next_message_number!(thread)
 
-        {messages, resolved, reply_to} =
-          case kind do
-            :request ->
-              requests =
-                insert_requests!(thread, author, attrs["body"], targets, reply_to, number)
+          {messages, resolved, reply_to} =
+            case kind do
+              :request ->
+                requests =
+                  insert_requests!(thread, author, attrs["body"], targets, reply_to, number)
 
-              {requests, [], reply_to}
+                {requests, [], reply_to}
 
-            :response ->
-              to_resolve = resolvable!(thread, author, reply_to)
-              reply_to = reply_to || single(to_resolve)
+              :response ->
+                to_resolve = resolvable!(thread, author, reply_to)
+                reply_to = reply_to || single(to_resolve)
 
-              message =
-                insert_message!(thread, author, :response, attrs["body"], reply_to, number)
+                message =
+                  insert_message!(thread, author, :response, attrs["body"], reply_to, number)
 
-              resolve!(to_resolve, author, now)
-              {[{message, nil}], to_resolve, reply_to}
+                resolve!(to_resolve, author, now)
+                {[{message, nil}], to_resolve, reply_to}
 
-            :note ->
-              message = insert_message!(thread, author, :note, attrs["body"], reply_to, number)
-              {[{message, nil}], [], reply_to}
+              :note ->
+                message = insert_message!(thread, author, :note, attrs["body"], reply_to, number)
+                {[{message, nil}], [], reply_to}
+            end
+
+          Attachments.store!(thread.session_id, Enum.map(messages, &elem(&1, 0)), files, now)
+          Thread |> where(id: ^thread.id) |> Repo.update_all(set: [last_message_at: now])
+          resolved_refs = Enum.map(resolved, &message_ref(thread, &1))
+          resolved_for = requesters(resolved)
+
+          for {message, to} <- messages do
+            Events.append!(session(thread), :message_posted,
+              actor: author,
+              thread: thread,
+              message: message,
+              payload:
+                %{
+                  thread: thread_ref(thread),
+                  message: message_ref(thread, message),
+                  kind: message.kind,
+                  author: author.name,
+                  to: to,
+                  reply_to: reply_to && message_ref(thread, reply_to),
+                  resolved: resolved_refs,
+                  resolved_for: resolved_for
+                }
+                |> with_attachments(files)
+            )
           end
 
-        Thread |> where(id: ^thread.id) |> Repo.update_all(set: [last_message_at: now])
-        resolved_refs = Enum.map(resolved, &message_ref(thread, &1))
-        resolved_for = requesters(resolved)
+          {thread, _state} = apply_state!(thread, thread.finished_at, author)
 
-        for {message, to} <- messages do
-          Events.append!(session(thread), :message_posted,
-            actor: author,
-            thread: thread,
-            message: message,
-            payload: %{
-              thread: thread_ref(thread),
-              message: message_ref(thread, message),
-              kind: message.kind,
-              author: author.name,
-              to: to,
-              reply_to: reply_to && message_ref(thread, reply_to),
-              resolved: resolved_refs,
-              resolved_for: resolved_for
-            }
-          )
-        end
-
-        {thread, _state} = apply_state!(thread, thread.finished_at, author)
-
-        %{
-          thread: %{thread | last_message_at: now},
-          messages: Enum.map(messages, &elem(&1, 0)),
-          resolved: resolved_refs
-        }
+          %{
+            thread: %{thread | last_message_at: now},
+            messages: Enum.map(messages, &elem(&1, 0)),
+            resolved: resolved_refs
+          }
+        end)
       end)
     end
   end
@@ -379,16 +399,28 @@ defmodule C3.Threads do
 
   @doc """
   Finishes a thread. Only the agent that opened it can. With pending requests it is a `409`
-  unless `attrs["force"]` is true, which cancels them. Finishing a finished thread is a
-  no-op. Returns `{:ok, %{thread, changed, cancelled}}`.
+  unless `attrs["force"]` is true, which cancels them — each with a `request.cancelled`, so
+  the agent working on one learns to stop, as with `cancel/3`. Finishing a finished thread
+  is a no-op. Returns `{:ok, %{thread, changed, cancelled}}`.
   """
-  def finish(%Agent{} = me, %Thread{id: thread_id}, attrs) do
+  def finish(%Agent{} = me, %Thread{} = thread, attrs) do
+    finish_thread(thread, me, attrs["force"] in [true, "true"])
+  end
+
+  @doc """
+  The admin finishes a thread (spec, decision 10): always forced, the pending requests are
+  cancelled with `cancelled_by: "admin"`. Same result as `finish/3`.
+  """
+  def admin_finish(%Thread{} = thread), do: finish_thread(thread, :admin, true)
+
+  defp finish_thread(%Thread{id: thread_id}, me, force?) do
     now = now()
-    force? = attrs["force"] in [true, "true"]
+    actor = if match?(%Agent{}, me), do: me
+    by = if actor, do: actor.name, else: "admin"
 
     Repo.transaction(fn ->
       thread = lock_thread!(thread_id, now)
-      check_opened_by!(thread, me)
+      if actor, do: check_opened_by!(thread, actor)
 
       if thread.finished_at do
         %{thread: thread, changed: false, cancelled: []}
@@ -398,6 +430,7 @@ defmodule C3.Threads do
           |> where([m], m.thread_id == ^thread.id and m.request_state in ^@pending)
           |> order_by(:number)
           |> Repo.all()
+          |> Repo.preload([:author_agent, :to_agent, :claimed_by_agent])
 
         refs = Enum.map(pending, &message_ref(thread, &1))
 
@@ -420,7 +453,24 @@ defmodule C3.Threads do
           ]
         )
 
-        {thread, _state} = apply_state!(thread, now, me, %{cancelled: refs})
+        for request <- pending do
+          Events.append!(session(thread), :request_cancelled,
+            actor: actor,
+            thread: thread,
+            message: request,
+            payload: %{
+              thread: thread_ref(thread),
+              request: message_ref(thread, request),
+              author: request.author_agent.name,
+              to: Targets.display(request.to_target, request.to_label, to_name(request)),
+              cancelled_by: by,
+              claimed_by: request.claimed_by_agent && request.claimed_by_agent.name,
+              reason: "thread finished"
+            }
+          )
+        end
+
+        {thread, _state} = apply_state!(thread, now, actor, %{cancelled: refs})
         %{thread: thread, changed: true, cancelled: refs}
       end
     end)
@@ -974,6 +1024,12 @@ defmodule C3.Threads do
 
   defp filter_since(query, nil), do: query
   defp filter_since(query, number), do: where(query, [m], m.number > ^number)
+
+  # An event payload names the files of the post, when it has any.
+  defp with_attachments(payload, []), do: payload
+
+  defp with_attachments(payload, files),
+    do: Map.put(payload, :attachments, Enum.map(files, & &1.filename))
 
   defp session(%Thread{session_id: id}), do: %Session{id: id}
 

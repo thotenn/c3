@@ -26,6 +26,13 @@ defmodule C3Web.Router do
     plug C3Web.Plugs.Idempotency
   end
 
+  # Rotating the secret: an Idempotency-Key would keep the new secret in clear for a day, so
+  # it is not honored here (a retry just rotates again).
+  pipeline :agent_no_replay do
+    plug C3Web.Plugs.AgentAuth
+    plug C3Web.Plugs.RateLimit, :token
+  end
+
   # The watcher's feed: a sign of life of the agent, not activity on the session.
   pipeline :feed do
     plug C3Web.Plugs.AgentAuth, activity: false
@@ -66,6 +73,7 @@ defmodule C3Web.Router do
     get "/login", AdminSessionController, :new
     post "/login", AdminSessionController, :create
     delete "/logout", AdminSessionController, :delete
+    get "/sessions/:code/attachments/:id", AdminAttachmentController, :show
 
     live_session :admin, on_mount: {C3Web.AdminAuth, :require_admin} do
       live "/", Admin.SessionsLive, :index
@@ -78,6 +86,13 @@ defmodule C3Web.Router do
     pipe_through :api
 
     get "/healthz", HealthController, :show
+  end
+
+  # Prometheus text, not JSON: no `accepts`. A 404 while C3_METRICS_TOKEN is unset.
+  scope "/", C3Web do
+    pipe_through :sse
+
+    get "/metrics", MetricsController, :show
   end
 
   scope "/", C3Web do
@@ -115,6 +130,12 @@ defmodule C3Web.Router do
     end
 
     scope "/" do
+      pipe_through :agent_no_replay
+
+      post "/sessions/:code/rotate-secret", SessionController, :rotate_secret
+    end
+
+    scope "/" do
       pipe_through :feed
 
       get "/sessions/:code/events", EventController, :index
@@ -127,6 +148,13 @@ defmodule C3Web.Router do
 
     get "/sessions/:code/events/stream", EventController, :stream
     get "/sessions/:code/watch", EventController, :watch
+  end
+
+  # A download answers the file's own type: no `accepts`, like the SSE routes.
+  scope "/v1", C3Web.V1 do
+    pipe_through [:sse, :agent]
+
+    get "/attachments/:id", AttachmentController, :show
   end
 
   # Enable LiveDashboard in development

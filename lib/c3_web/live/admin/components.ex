@@ -60,6 +60,11 @@ defmodule C3Web.Admin.Components do
     """
   end
 
+  @doc "A byte count for people: `512 B`, `3.4 KB`, `1.2 MB`."
+  def format_bytes(n) when n < 1024, do: "#{n} B"
+  def format_bytes(n) when n < 1024 * 1024, do: "#{Float.round(n / 1024, 1)} KB"
+  def format_bytes(n), do: "#{Float.round(n / (1024 * 1024), 1)} MB"
+
   @doc "The dotted type of an event (`thread.opened`)."
   def event_type(%Event{type: type}), do: Ecto.Enum.mappings(Event, :type)[type]
 
@@ -102,6 +107,9 @@ defmodule C3Web.Admin.Components do
       :session_joins_unlocked ->
         "joins unlocked by #{p["by"]}"
 
+      :session_secret_rotated ->
+        "security number rotated by #{p["by"]}#{if p["unlocked"], do: "; joins unlocked", else: ""}"
+
       :session_closing_soon ->
         "closes at #{p["closes_at"]} (#{p["reason"]})"
 
@@ -113,7 +121,8 @@ defmodule C3Web.Admin.Components do
   defp message_summary(p) do
     to = if p["to"], do: " → #{p["to"]}", else: ""
     resolves = if p["resolved"] in [nil, []], do: "", else: ", resolves #{list(p["resolved"])}"
-    "#{p["author"]} posted #{p["kind"]} #{p["message"]}#{to}#{resolves}"
+    files = if p["attachments"] in [nil, []], do: "", else: " [#{list(p["attachments"])}]"
+    "#{p["author"]} posted #{p["kind"]} #{p["message"]}#{to}#{resolves}#{files}"
   end
 
   defp label(nil), do: ""
