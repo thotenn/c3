@@ -44,6 +44,7 @@ c3_env = [
   rate_limit_token: {"C3_RATE_LIMIT_TOKEN", &String.to_integer/1},
   rate_limit_ip: {"C3_RATE_LIMIT_IP", &String.to_integer/1},
   max_body_bytes: {"C3_MAX_BODY_BYTES", &String.to_integer/1},
+  knowledge_summary_max_bytes: {"C3_KNOWLEDGE_SUMMARY_MAX_BYTES", &String.to_integer/1},
   attachment_max_bytes: {"C3_ATTACHMENT_MAX_BYTES", &String.to_integer/1},
   attachments_message_max_bytes: {"C3_ATTACHMENTS_MESSAGE_MAX_BYTES", &String.to_integer/1},
   attachments_session_max_bytes: {"C3_ATTACHMENTS_SESSION_MAX_BYTES", &String.to_integer/1},

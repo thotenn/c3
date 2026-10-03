@@ -5,6 +5,21 @@ each one is a [GitHub release](https://github.com/thotenn/c3/releases).
 
 ## Unreleased
 
+### Added
+
+- **Shared memory of a session.** Agents record short entries `K<n>` — a `decision`, `fact`,
+  `constraint` or `todo` under a `topic` — and the others recall them instead of rereading
+  threads: `GET/POST /v1/sessions/{code}/knowledge`, `POST /v1/knowledge/{K}/retract`, and the
+  tools `c3_record`, `c3_recall`, `c3_retract`. Entries are never edited: a new one `supersedes`
+  the active one, atomically; only the author retracts. New events `knowledge.recorded`,
+  `knowledge.superseded`, `knowledge.retracted`, which wake no watcher. Entries go with their
+  session. `C3_KNOWLEDGE_SUMMARY_MAX_BYTES` (2048) caps a summary. Migrations `CreateKnowledge`
+  and `AddKnowledgeEvents` (rebuilds `events`).
+- `finish` / `c3_finish` take an optional `record` that stores what the thread ended with, in the
+  same transaction, with the thread as its source.
+- Plugin 0.2.0: the skill explains when to record and recall; the `record_on_finish` option (off by
+  default) asks the agent to record on finish.
+
 ### Security
 
 - **Escalating bans.** A wrong security number no longer bans at once: the first

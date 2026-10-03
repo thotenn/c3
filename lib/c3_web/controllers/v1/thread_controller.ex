@@ -6,6 +6,7 @@ defmodule C3Web.V1.ThreadController do
   use C3Web, :controller
 
   alias C3.Threads
+  alias C3Web.V1.KnowledgeJSON
 
   action_fallback C3Web.V1.FallbackController
 
@@ -76,7 +77,9 @@ defmodule C3Web.V1.ThreadController do
          {:ok, result} <- Threads.finish(agent, thread, params) do
       render(conn, :action,
         thread: summary(result.thread),
-        extra: %{finished: result.changed, cancelled: result.cancelled}
+        extra:
+          %{finished: result.changed, cancelled: result.cancelled}
+          |> put_recorded(result.recorded)
       )
     end
   end
@@ -89,6 +92,10 @@ defmodule C3Web.V1.ThreadController do
       render(conn, :action, thread: summary(result.thread), extra: %{reopened: result.changed})
     end
   end
+
+  # Only a finish that recorded something says so, so the plain finish answers as before.
+  defp put_recorded(extra, nil), do: extra
+  defp put_recorded(extra, entry), do: Map.put(extra, :recorded, KnowledgeJSON.entry(entry))
 
   defp render_thread(conn, thread, messages) do
     {thread, state} = summary(thread)

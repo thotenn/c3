@@ -24,6 +24,9 @@ defmodule C3Web.MCP.ParityTest do
     "c3_cancel" => {:post, "/threads/:thread/cancel"},
     "c3_finish" => {:post, "/threads/:thread/finish"},
     "c3_reopen" => {:post, "/threads/:thread/reopen"},
+    "c3_record" => {:post, "/sessions/:code/knowledge"},
+    "c3_recall" => {:get, "/sessions/:code/knowledge"},
+    "c3_retract" => {:post, "/knowledge/:entry/retract"},
     "c3_events" => {:get, "/sessions/:code/events"},
     "c3_unlock" => {:post, "/sessions/:code/unlock"},
     "c3_rotate_secret" => {:post, "/sessions/:code/rotate-secret"},
@@ -74,6 +77,31 @@ defmodule C3Web.MCP.ParityTest do
     {:a, "c3_list_threads", %{"status" => "pending"}},
     {:a, "c3_list_threads", %{"status" => "bogus"}},
     {:a, "c3_list_threads", %{"awaiting" => "me"}},
+    {:a, "c3_record",
+     %{"topic" => "deploy", "kind" => "decision", "summary" => "Staging first", "source" => "T1"}},
+    {:b, "c3_record",
+     %{
+       "topic" => "deploy.prod",
+       "kind" => "decision",
+       "summary" => "Prod too",
+       "supersedes" => "K1",
+       "idempotency_key" => "k2"
+     }},
+    {:b, "c3_record",
+     %{"topic" => "deploy", "kind" => "fact", "summary" => "Again", "supersedes" => "K1"}},
+    {:b, "c3_record", %{"topic" => "Bad Topic", "kind" => "fact", "summary" => "x"}},
+    {:a, "c3_recall", %{}},
+    {:a, "c3_recall", %{"topic" => "deploy", "status" => "all", "limit" => 10}},
+    {:a, "c3_recall", %{"status" => "bogus"}},
+    {:a, "c3_retract", %{"entry" => "K2"}},
+    {:b, "c3_retract", %{"entry" => "K2", "reason" => "Not decided yet"}},
+    {:b, "c3_retract", %{"entry" => "K9"}},
+    {:a, "c3_finish",
+     %{
+       "thread" => "T1",
+       "record" => %{"topic" => "deploy", "kind" => "decision", "summary" => "Done on staging"}
+     }},
+    {:a, "c3_reopen", %{"thread" => "T1"}},
     {:a, "c3_events", %{"after" => 0, "limit" => 5}},
     {:a, "c3_events", %{"after" => 3}},
     {:b, "c3_unlock", %{}},
@@ -125,6 +153,31 @@ defmodule C3Web.MCP.ParityTest do
       assert {step, mcp_result} == {step, rest_result}
     end
 
+    # The knowledge steps did what they say, not just failed alike on both sides.
+    knowledge =
+      for {{_, {_, name, _}}, {status, body}} <- rest,
+          name in ~w(c3_record c3_recall c3_retract c3_finish),
+          do: {name, status, body["id"] || body["error"]["code"] || entry_ids(body)}
+
+    assert [
+             {"c3_finish", 403, "forbidden"},
+             {"c3_finish", 200, _},
+             {"c3_record", 201, "K1"},
+             {"c3_record", 201, "K2"},
+             {"c3_record", 409, "conflict"},
+             {"c3_record", 422, "invalid_request"},
+             {"c3_recall", 200, ["K2"]},
+             {"c3_recall", 200, ["K1", "K2"]},
+             {"c3_recall", 422, "invalid_request"},
+             {"c3_retract", 403, "forbidden"},
+             {"c3_retract", 200, "K2"},
+             {"c3_retract", 404, "not_found"},
+             {"c3_finish", 200, _}
+           ] = knowledge
+
+    assert {_, {200, %{"recorded" => %{"id" => "K3", "source" => "T1"}}}} =
+             List.last(for {{_, {_, "c3_finish", _}}, _} = step <- rest, do: step)
+
     # The scenario exercised the error codes, not only the happy path.
     codes = for {_, {_, %{"error" => %{"code" => code}}}} <- rest, uniq: true, do: code
 
@@ -132,6 +185,9 @@ defmodule C3Web.MCP.ParityTest do
              ~w(conflict forbidden invalid_request invalid_secret ip_banned not_found
                 session_closed unauthorized)
   end
+
+  defp entry_ids(%{"entries" => entries}), do: Enum.map(entries, & &1["id"])
+  defp entry_ids(_body), do: nil
 
   defp run(call) do
     ip = unique_ip()
@@ -180,6 +236,7 @@ defmodule C3Web.MCP.ParityTest do
     {code, args} = Map.pop(args, "session_code")
     {thread, args} = Map.pop(args, "thread")
     {attachment, args} = Map.pop(args, "attachment_id")
+    {entry, args} = Map.pop(args, "entry")
     code = code || (route =~ ":code" && code_of(token))
 
     path =
@@ -187,7 +244,8 @@ defmodule C3Web.MCP.ParityTest do
         (route
          |> String.replace(":code", to_string(code))
          |> String.replace(":thread", to_string(thread))
-         |> String.replace(":attachment", to_string(attachment)))
+         |> String.replace(":attachment", to_string(attachment))
+         |> String.replace(":entry", to_string(entry)))
 
     conn =
       conn

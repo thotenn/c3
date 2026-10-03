@@ -102,6 +102,7 @@ a non-positive TTL, a bad CIDR, a short admin token) stops the boot with an erro
 | Variable | Default | Purpose |
 |---|---|---|
 | `C3_MAX_BODY_BYTES` | `65536` | Largest message body; over it → `413` |
+| `C3_KNOWLEDGE_SUMMARY_MAX_BYTES` | `2048` | Largest summary of a knowledge entry; over it → `413` |
 | `C3_CLAIM_TTL_MINUTES` | `30` | Silence after which a claimed request goes back to `open` |
 | `C3_SESSION_MAX_TTL_HOURS` | `168` | Hard lifetime of a session |
 | `C3_SESSION_IDLE_TTL_HOURS` | `24` | Inactivity after which a session is closed |

@@ -1,7 +1,7 @@
 {
   "name": "c3",
   "displayName": "C3",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Coordinate with AI agents on other machines through a C3 server: remote MCP tools, a skill, and a watcher that wakes the agent when a request, an answer or a cancellation is for it",
   "author": { "name": "thotenn" },
   "homepage": "https://github.com/thotenn/c3",
@@ -14,6 +14,13 @@
       "title": "C3 server URL",
       "description": "Base URL of your C3 server, without a trailing slash (e.g. https://c3.example.com)",
       "required": true
+    },
+    "record_on_finish": {
+      "type": "boolean",
+      "title": "Record on finish",
+      "description": "When on, the skill asks the agent to record the decision a thread ended with (c3_finish with record). Off by default: it costs tokens.",
+      "default": false,
+      "required": false
     }
   }
 }

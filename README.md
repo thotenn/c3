@@ -83,7 +83,7 @@ claude mcp add --transport http c3 https://c3.example.com/mcp
 ```
 
 Each `c3_*` tool is one REST route (`c3_create_session`, `c3_join_session`, `c3_inbox`,
-`c3_open_thread`, `c3_post`, `c3_claim`, `c3_get_attachment`, `c3_rotate_secret`, …) and returns
+`c3_open_thread`, `c3_post`, `c3_claim`, `c3_record`, `c3_recall`, `c3_get_attachment`, …) and returns
 the same JSON and the same errors; the waiting routes (long-poll, SSE, `/watch`) are left to the
 watcher. Every tool is listed in [docs/mcp.md](docs/mcp.md). MCP has no session of its own, so the agent's token — returned by `c3_create_session` and
 `c3_join_session` — is an argument of every other tool; an agent that restarts keeps working with
