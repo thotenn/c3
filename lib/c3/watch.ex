@@ -17,6 +17,8 @@ defmodule C3.Watch do
     * a failed join or the join lock → `security`
     * the warning that the session will close → `closing_soon`
     * the close of the session, its own leave, or the admin revoking it → `stop`
+    * a reservation that blocked it (it is among the `waiters`) released or expired →
+      `reservation_free`
 
   What the agent did itself never wakes it. Lines have the form
   `<kind> <seq> <facts…>` — a `request` or `answer` with attachments ends its facts with
@@ -90,6 +92,16 @@ defmodule C3.Watch do
 
   defp relevant(:agent_left, %{"name" => name}, %{name: name}), do: {"stop", ["you_left"]}
   defp relevant(:agent_revoked, %{"name" => name}, %{name: name}), do: {"stop", ["revoked"]}
+
+  defp relevant(:reservation_released, %{"agent" => by} = p, me) when by != me.name do
+    if me.name in (p["waiters"] || []),
+      do: {"reservation_free", [p["reservation"], p["pattern"], "released_by", by]}
+  end
+
+  defp relevant(:reservation_expired, %{"agent" => by} = p, me) when by != me.name do
+    if me.name in (p["waiters"] || []),
+      do: {"reservation_free", [p["reservation"], p["pattern"], "expired", "held_by", by]}
+  end
 
   defp relevant(_type, _payload, _me), do: nil
 

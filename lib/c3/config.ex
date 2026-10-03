@@ -31,6 +31,8 @@ defmodule C3.Config do
   | `:attachment_inline_max_bytes` | — | 1 MiB — the largest file `GET /v1/attachments/{id}?format=json` (and `c3_get_attachment`) returns inline |
   | `:attachments_dir` | `C3_ATTACHMENTS_DIR` | `nil` = `attachments/` next to the SQLite file (`/data/attachments` in the image) |
   | `:claim_ttl` | `C3_CLAIM_TTL_MINUTES` | 30 min, in seconds — a claim whose agent stays silent that long goes back to `open` |
+  | `:reservation_ttl` | `C3_RESERVATION_TTL_MINUTES` | 60 min, in seconds — how long a reservation lasts when the agent names no `ttl_minutes` |
+  | `:reservation_max_ttl` | `C3_RESERVATION_MAX_TTL_HOURS` | 24 h, in seconds — the longest `ttl_minutes` a reservation or a renewal may ask for |
   | `:mcp_allowed_origins` | `C3_MCP_ALLOWED_ORIGINS` | `[]` — browser origins allowed on `/mcp` (`https://app.example.com`); a request with any other `Origin` gets `403`. Agents send none |
   | `:admin_token` | `C3_ADMIN_TOKEN` | `nil` — the token of the admin pages (`/admin`), 32 characters or more; unset = no admin, `/admin` is a `404` |
   | `:metrics_token` | `C3_METRICS_TOKEN` | `nil` — bearer token of `GET /metrics` (Prometheus text), 32 characters or more; unset = `/metrics` is a `404` |
@@ -67,6 +69,8 @@ defmodule C3.Config do
     attachment_inline_max_bytes: 1024 * 1024,
     attachments_dir: nil,
     claim_ttl: 30 * 60,
+    reservation_ttl: 60 * 60,
+    reservation_max_ttl: 24 * 3600,
     mcp_allowed_origins: [],
     admin_token: nil,
     metrics_token: nil,
@@ -113,9 +117,21 @@ defmodule C3.Config do
       raise ArgumentError, "C3_SECRET_DIGITS must be between 6 and 8, got #{inspect(digits)}"
     end
 
-    for key <- [:session_idle_ttl, :session_max_ttl, :long_poll_max_wait, :sse_keepalive],
+    for key <- [
+          :session_idle_ttl,
+          :session_max_ttl,
+          :long_poll_max_wait,
+          :sse_keepalive,
+          :reservation_ttl,
+          :reservation_max_ttl
+        ],
         get(key) <= 0 do
       raise ArgumentError, "#{inspect(key)} must be positive, got #{inspect(get(key))}"
+    end
+
+    if get(:reservation_ttl) > get(:reservation_max_ttl) do
+      raise ArgumentError,
+            "C3_RESERVATION_TTL_MINUTES must not be longer than C3_RESERVATION_MAX_TTL_HOURS"
     end
 
     if get(:retention_days) < 0 do

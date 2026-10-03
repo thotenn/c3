@@ -3,6 +3,25 @@
 All notable changes to C3, newest first. Versions follow [Semantic Versioning](https://semver.org/);
 each one is a [GitHub release](https://github.com/thotenn/c3/releases).
 
+## Unreleased
+
+### Added
+
+- **Reservations.** An agent reserves what it is about to work on — files of a repository
+  (`repo:c3/lib/**`) or a named resource (`slot:deploy`) — so other agents do not step on it:
+  `GET/POST /v1/sessions/{code}/reservations`, `…/reservations/renew`, `…/reservations/release`,
+  and the tools `c3_reserve`, `c3_renew`, `c3_release`, `c3_reservations`. Advisory: overlapping
+  globs of different agents conflict (`409` naming the holder) when either is exclusive; a
+  reservation expires on its own (`C3_RESERVATION_TTL_MINUTES`, 60; at most
+  `C3_RESERVATION_MAX_TTL_HOURS`, 24) and ends when its agent leaves, is revoked or the session
+  closes. An agent that ran into one gets a `reservation_free` watcher line when it is released or
+  expires. New events `reservation.created`, `.renewed`, `.released`, `.expired`.
+
+### Upgrading
+
+- The migration `AddC34Events` rebuilds the `events` table (SQLite cannot alter a CHECK): back up
+  the database file before deploying.
+
 ## 0.2.0 — 2026-10-03
 
 ### Added

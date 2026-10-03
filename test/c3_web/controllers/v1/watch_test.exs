@@ -1,6 +1,8 @@
 defmodule C3Web.V1.WatchTest do
   use C3Web.ConnCase
 
+  import Ecto.Query, only: [where: 2]
+
   defp fresh_conn, do: with_ip(build_conn(), unique_ip())
 
   defp authed(token), do: put_req_header(fresh_conn(), "authorization", "Bearer " <> token)
@@ -159,6 +161,38 @@ defmodule C3Web.V1.WatchTest do
         assert {cursor, []} = watch(s, token, after: 3)
         assert cursor == 7
       end
+    end
+
+    test "a reservation wakes only its waiters, when it is released or expires", %{s: s} do
+      reserve = fn token, patterns, status ->
+        authed(token)
+        |> post(~p"/v1/sessions/#{s.code}/reservations", %{"patterns" => patterns})
+        |> json_response(status)
+      end
+
+      reserve.(s.t1, ["repo:c3/lib/**", "slot:deploy"], 201)
+      reserve.(s.t2, ["repo:c3/lib/c3.ex"], 409)
+
+      # Reserving and running into one wake nobody.
+      for token <- [s.t1, s.t2, s.t3], do: assert({5, []} = watch(s, token, after: 3))
+
+      authed(s.t1)
+      |> post(~p"/v1/sessions/#{s.code}/reservations/release", %{"reservations" => ["R1"]})
+      |> json_response(200)
+
+      assert ["reservation_free 6 R1 repo:c3/lib/** released_by AG1"] = lines(s, s.t2, 5)
+      assert [] = lines(s, s.t3, 5)
+      assert [] = lines(s, s.t1, 5)
+
+      reserve.(s.t3, ["slot:deploy"], 409)
+
+      C3.Repo.update_all(where(C3.Reservations.Reservation, number: 2),
+        set: [expires_at: DateTime.add(DateTime.utc_now(), -1)]
+      )
+
+      assert C3.Reservations.expire() == 1
+      assert ["reservation_free 7 R2 slot:deploy expired held_by AG1"] = lines(s, s.t3, 6)
+      assert [] = lines(s, s.t2, 6)
     end
 
     test "is held through other agents' events until one concerns the caller", %{s: s} do

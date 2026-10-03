@@ -45,6 +45,17 @@ defmodule C3Web.MCP.Tools do
     "description" => "Optional: the active entry this one replaces (K2); it becomes superseded."
   }
 
+  @reservation_refs %{
+    "type" => "array",
+    "items" => %{"type" => "string"},
+    "description" => "Optional reservation ids (R3); default: every active one of yours."
+  }
+  @ttl_minutes %{
+    "type" => "integer",
+    "minimum" => 1,
+    "description" => "Optional minutes until it expires (the server's default otherwise)."
+  }
+
   @attachments %{
     "type" => "array",
     "description" =>
@@ -293,6 +304,77 @@ defmodule C3Web.MCP.Tools do
         "idempotency_key" => @idempotency_key
       },
       required: ["token", "entry"]
+    },
+    %{
+      name: "c3_reserve",
+      route: {:post, "/sessions/:code/reservations"},
+      description:
+        "Reserve what you are about to work on so other agents do not step on it, before you " <>
+          "edit: a pattern per thing, repo:<repo name>/<path glob> (repo:c3/lib/**) or " <>
+          "slot:<name> (slot:deploy). All or none: if another agent holds an overlapping one it " <>
+          "fails with 409 and who holds it, and the watcher tells you when it frees up. " <>
+          "Advisory: C3 does not lock files. Release when done.",
+      properties: %{
+        "token" => @token,
+        "patterns" => %{
+          "type" => "array",
+          "items" => %{"type" => "string"},
+          "description" =>
+            "<namespace>:<glob>; * stays within a path segment, ** crosses them, ? is one character."
+        },
+        "exclusive" => %{
+          "type" => "boolean",
+          "description" => "Default true. Shared reservations only conflict with exclusive ones."
+        },
+        "ttl_minutes" => @ttl_minutes,
+        "reason" => %{"type" => "string", "description" => "Optional: what you are doing."},
+        "idempotency_key" => @idempotency_key
+      },
+      required: ["token", "patterns"]
+    },
+    %{
+      name: "c3_renew",
+      route: {:post, "/sessions/:code/reservations/renew"},
+      description: "Extend your active reservations, when the work takes longer than planned.",
+      properties: %{
+        "token" => @token,
+        "reservations" => @reservation_refs,
+        "ttl_minutes" => @ttl_minutes,
+        "idempotency_key" => @idempotency_key
+      },
+      required: ["token"]
+    },
+    %{
+      name: "c3_release",
+      route: {:post, "/sessions/:code/reservations/release"},
+      description:
+        "Release your reservations when the work is done (by default all of yours); agents " <>
+          "waiting on them are told.",
+      properties: %{
+        "token" => @token,
+        "reservations" => @reservation_refs,
+        "idempotency_key" => @idempotency_key
+      },
+      required: ["token"]
+    },
+    %{
+      name: "c3_reservations",
+      route: {:get, "/sessions/:code/reservations"},
+      query: ["agent", "status"],
+      description: "The session's reservations: by default the active ones of every agent.",
+      properties: %{
+        "token" => @token,
+        "agent" => %{
+          "type" => "string",
+          "description" => "Optional: me, or an agent name (AG2)."
+        },
+        "status" => %{
+          "type" => "string",
+          "enum" => ["active", "all"],
+          "description" => "Default active; all includes the ones that ended."
+        }
+      },
+      required: ["token"]
     },
     %{
       name: "c3_reopen",

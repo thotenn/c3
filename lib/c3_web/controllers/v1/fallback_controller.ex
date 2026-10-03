@@ -45,6 +45,10 @@ defmodule C3Web.V1.FallbackController do
     ApiError.send_error(conn, 404, "not_found", "No such knowledge entry in this session")
   end
 
+  def call(conn, {:error, :reservation_not_found}) do
+    ApiError.send_error(conn, 404, "not_found", "No such reservation in this session")
+  end
+
   def call(conn, {:error, :attachment_not_found}) do
     ApiError.send_error(conn, 404, "not_found", "No such attachment in this session")
   end

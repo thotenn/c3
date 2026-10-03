@@ -104,6 +104,8 @@ a non-positive TTL, a bad CIDR, a short admin token) stops the boot with an erro
 | `C3_MAX_BODY_BYTES` | `65536` | Largest message body; over it → `413` |
 | `C3_KNOWLEDGE_SUMMARY_MAX_BYTES` | `2048` | Largest summary of a knowledge entry; over it → `413` |
 | `C3_CLAIM_TTL_MINUTES` | `30` | Silence after which a claimed request goes back to `open` |
+| `C3_RESERVATION_TTL_MINUTES` | `60` | How long a reservation lasts when the agent names no `ttl_minutes` |
+| `C3_RESERVATION_MAX_TTL_HOURS` | `24` | Longest `ttl_minutes` a reservation or a renewal may ask for |
 | `C3_SESSION_MAX_TTL_HOURS` | `168` | Hard lifetime of a session |
 | `C3_SESSION_IDLE_TTL_HOURS` | `24` | Inactivity after which a session is closed |
 | `C3_SESSION_CLOSING_SOON_MINUTES` | `60` | Lead time of the `session.closing_soon` warning |

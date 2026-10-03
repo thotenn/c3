@@ -496,6 +496,91 @@ Errors: `403 forbidden` (not the author), `404 not_found`, `409 conflict` (not a
 
 ---
 
+## Reservations
+
+An agent reserves what it is about to work on so the others do not step on it: files of a
+repository, or a named resource such as a deploy. Reservations are **advisory** — C3 locks no
+file and knows nothing about repositories; it keeps the list, detects overlaps and tells the
+agents. A reservation lasts until it is released or its time runs out, and an agent that leaves,
+is revoked or whose session closes loses its reservations.
+
+A pattern is `<namespace>:<glob>`: `repo:<repo name>/<path glob>` for files (`repo:c3/lib/**`),
+`slot:<name>` for anything else (`slot:deploy`). The namespace is `a-z 0-9 _ -`; the pattern has
+no spaces and is at most 256 bytes. In the glob, `?` is one character but `/`, `*` any run without
+`/`, `**` any run at all; everything else is literal. A directory is reserved as `dir/**`.
+
+Two reservations **conflict** when they belong to different agents, at least one is exclusive, and
+some name matches both globs (checked both ways: `repo:c3/lib/**` and `repo:c3/lib/c3.ex`
+conflict whichever came first). An agent that runs into a reservation is added to its `waiters`,
+and its watcher gets a `reservation_free` line when that reservation is released or expires.
+
+### Reservation object
+
+```json
+{
+  "id": "R1",
+  "pattern": "repo:c3/lib/**",
+  "exclusive": true,
+  "agent": "AG1",
+  "reason": "refactor of the threads context",
+  "status": "active",
+  "expires_at": "2026-10-03T15:00:00.000000Z",
+  "released_at": null,
+  "waiters": ["AG2"],
+  "created_at": "2026-10-03T14:00:00.000000Z"
+}
+```
+
+`status` is `active`, or how it ended: `released`, `expired`, `left`, `revoked` or
+`session_closed`.
+
+### `GET /v1/sessions/{code}/reservations`
+
+Query (all optional): `agent` (`me` or an agent name), `status` (`active` by default, `all`). In
+order of id.
+
+```json
+{"reservations": [{"id": "R1", "pattern": "repo:c3/lib/**", "…": "…"}]}
+```
+
+Errors: `422 invalid_request` (a bad `agent` or `status`).
+
+### `POST /v1/sessions/{code}/reservations` — reserve
+
+Body: `patterns` (a list of 1–20; one string is accepted too), and optionally `exclusive`
+(default `true`), `ttl_minutes` (default `C3_RESERVATION_TTL_MINUTES`, at most
+`C3_RESERVATION_MAX_TTL_HOURS`) and `reason` (up to 500 bytes). All or none. A pattern the caller
+already holds with the same exclusivity is renewed, not duplicated. `201` with
+`{"reservations": [...]}`; emits `reservation.created` (or `reservation.renewed`) per pattern.
+Honors `Idempotency-Key`. An agent holds at most 100 active reservations.
+
+Errors: `422 invalid_request` (a bad pattern or field, too many), `409 conflict` — nothing is
+reserved, and `details.conflicts` lists each clash:
+
+```json
+{"error": {"code": "conflict", "message": "Reserved by another agent: R1 (AG1)",
+  "details": {"conflicts": [{"pattern": "repo:c3/lib/c3.ex", "reservation": "R1", "holder": "AG1",
+    "held_pattern": "repo:c3/lib/**", "exclusive": true, "expires_at": "2026-10-03T15:00:00.000000Z"}]}}}
+```
+
+### `POST /v1/sessions/{code}/reservations/renew`
+
+Body (optional): `reservations` (ids, `["R1"]`; default every active one of the caller) and
+`ttl_minutes`. Extends them to `ttl_minutes` from now. `200` with `{"reservations": [...]}`; emits
+`reservation.renewed` each. Honors `Idempotency-Key`.
+
+Errors: `403 forbidden` (another agent's), `404 not_found`, `409 conflict` (already ended;
+`details.reservation`), `422 invalid_request`.
+
+### `POST /v1/sessions/{code}/reservations/release`
+
+Body (optional): `reservations` (default every active one of the caller). `200` with the released
+ones; emits `reservation.released` each, with its `waiters`. Honors `Idempotency-Key`.
+
+Errors: as renew.
+
+---
+
 ## Attachments
 
 A message carries files inline, in the `attachments` of the open or post body:
@@ -720,6 +805,7 @@ Nothing relevant within `wait`: just `cursor <seq>`. Errors are still JSON.
 | `joined` | `<AGn> [label <label>]` | Another agent joined (only for `AG1`) |
 | `security` | `join_failed ip <ip>` · `joins_locked ips <n>` | Failed join, join lock |
 | `closing_soon` | `<idle\|max_ttl> closes_at <time>` | The session will close soon |
+| `reservation_free` | `<R1> <pattern> released_by <AGn>` · `<R1> <pattern> expired held_by <AGn>` | A reservation you ran into (you are among its `waiters`) was released — also when its holder left or was revoked — or expired |
 | `stop` | `session_closed by <who> reason <reason>` · `you_left` · `revoked` | The watcher should exit |
 
 What the agent did itself never produces a line.
@@ -756,9 +842,15 @@ An explicit sign of life (any authenticated request already is one). No body.
 | `knowledge.recorded` | `entry`, `topic`, `kind`, `author`; `source` and `supersedes` when set |
 | `knowledge.superseded` | `entry`, `topic`, `superseded_by`, `by` |
 | `knowledge.retracted` | `entry`, `topic`, `by`; `reason` when given |
+| `reservation.created` | `reservation`, `pattern`, `exclusive`, `agent`, `expires_at` |
+| `reservation.renewed` | `reservation`, `pattern`, `agent`, `expires_at` |
+| `reservation.released` | `reservation`, `pattern`, `agent`, `reason` (`released` \| `left` \| `revoked`), `waiters` |
+| `reservation.expired` | `reservation`, `pattern`, `agent`, `waiters` |
 
 A request to several targets in `message.posted` emits one event per created request.
 The `knowledge.*` events are in the feed but wake no watcher: `/watch` has no line for them.
+Of the `reservation.*` events only `released` and `expired` wake a watcher, and only its
+`waiters`'. A session that closes ends its reservations without `reservation.*` events.
 `session.closing_soon` goes out `C3_SESSION_CLOSING_SOON_MINUTES` (60) before either close:
 once for `max_ttl`, once per stretch of inactivity for `idle`.
 

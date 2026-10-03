@@ -50,6 +50,8 @@ c3_env = [
   attachments_session_max_bytes: {"C3_ATTACHMENTS_SESSION_MAX_BYTES", &String.to_integer/1},
   attachments_dir: {"C3_ATTACHMENTS_DIR", &String.trim/1},
   claim_ttl: {"C3_CLAIM_TTL_MINUTES", &(String.to_integer(&1) * 60)},
+  reservation_ttl: {"C3_RESERVATION_TTL_MINUTES", &(String.to_integer(&1) * 60)},
+  reservation_max_ttl: {"C3_RESERVATION_MAX_TTL_HOURS", &(String.to_integer(&1) * 3600)},
   mcp_allowed_origins: {"C3_MCP_ALLOWED_ORIGINS", csv},
   admin_token: {"C3_ADMIN_TOKEN", &String.trim/1},
   metrics_token: {"C3_METRICS_TOKEN", &String.trim/1}

@@ -27,6 +27,10 @@ defmodule C3Web.MCP.ParityTest do
     "c3_record" => {:post, "/sessions/:code/knowledge"},
     "c3_recall" => {:get, "/sessions/:code/knowledge"},
     "c3_retract" => {:post, "/knowledge/:entry/retract"},
+    "c3_reserve" => {:post, "/sessions/:code/reservations"},
+    "c3_renew" => {:post, "/sessions/:code/reservations/renew"},
+    "c3_release" => {:post, "/sessions/:code/reservations/release"},
+    "c3_reservations" => {:get, "/sessions/:code/reservations"},
     "c3_events" => {:get, "/sessions/:code/events"},
     "c3_unlock" => {:post, "/sessions/:code/unlock"},
     "c3_rotate_secret" => {:post, "/sessions/:code/rotate-secret"},
@@ -37,7 +41,7 @@ defmodule C3Web.MCP.ParityTest do
 
   @masked ~w(session_code secret token at created_at expires_at last_activity_at
              last_seen_at joined_at last_message_at finished_at resolved_at closed_at closes_at
-             banned_until ip subject)
+             released_at banned_until ip subject)
 
   # Each step: who calls (:a, :b, or :none for no token), the tool and its arguments. `:code`,
   # `:secret` and a token as an argument are filled in from what earlier steps returned.
@@ -102,6 +106,16 @@ defmodule C3Web.MCP.ParityTest do
        "record" => %{"topic" => "deploy", "kind" => "decision", "summary" => "Done on staging"}
      }},
     {:a, "c3_reopen", %{"thread" => "T1"}},
+    {:a, "c3_reserve", %{"patterns" => ["repo:c3/lib/**"], "reason" => "refactor"}},
+    {:b, "c3_reserve", %{"patterns" => ["repo:c3/lib/c3.ex", "slot:deploy"]}},
+    {:b, "c3_reserve", %{"patterns" => ["slot:deploy"], "idempotency_key" => "k3"}},
+    {:b, "c3_reserve", %{"patterns" => ["no namespace"]}},
+    {:a, "c3_reservations", %{}},
+    {:a, "c3_renew", %{"reservations" => ["R2"]}},
+    {:b, "c3_renew", %{"ttl_minutes" => 90}},
+    {:a, "c3_release", %{}},
+    {:b, "c3_release", %{"reservations" => ["R9"]}},
+    {:b, "c3_reservations", %{"agent" => "me", "status" => "all"}},
     {:a, "c3_events", %{"after" => 0, "limit" => 5}},
     {:a, "c3_events", %{"after" => 3}},
     {:b, "c3_unlock", %{}},
@@ -175,6 +189,25 @@ defmodule C3Web.MCP.ParityTest do
              {"c3_finish", 200, _}
            ] = knowledge
 
+    # The reservation steps did what they say.
+    reservations =
+      for {{_, {_, name, _}}, {status, body}} <- rest,
+          name in ~w(c3_reserve c3_renew c3_release c3_reservations),
+          do: {name, status, reservation_ids(body) || body["error"]["code"]}
+
+    assert [
+             {"c3_reserve", 201, ["R1"]},
+             {"c3_reserve", 409, "conflict"},
+             {"c3_reserve", 201, ["R2"]},
+             {"c3_reserve", 422, "invalid_request"},
+             {"c3_reservations", 200, ["R1", "R2"]},
+             {"c3_renew", 403, "forbidden"},
+             {"c3_renew", 200, ["R2"]},
+             {"c3_release", 200, ["R1"]},
+             {"c3_release", 404, "not_found"},
+             {"c3_reservations", 200, ["R2"]}
+           ] = reservations
+
     assert {_, {200, %{"recorded" => %{"id" => "K3", "source" => "T1"}}}} =
              List.last(for {{_, {_, "c3_finish", _}}, _} = step <- rest, do: step)
 
@@ -188,6 +221,9 @@ defmodule C3Web.MCP.ParityTest do
 
   defp entry_ids(%{"entries" => entries}), do: Enum.map(entries, & &1["id"])
   defp entry_ids(_body), do: nil
+
+  defp reservation_ids(%{"reservations" => list}), do: Enum.map(list, & &1["id"])
+  defp reservation_ids(_body), do: nil
 
   defp run(call) do
     ip = unique_ip()

@@ -11,7 +11,7 @@ defmodule C3.Sessions do
   """
   import Ecto.Query
 
-  alias C3.{Config, Credentials, Events, Metrics, Repo, Security, Threads}
+  alias C3.{Config, Credentials, Events, Metrics, Repo, Reservations, Security, Threads}
   alias C3.Sessions.{Agent, IdempotencyKey, Session}
 
   @type meta :: %{ip: String.t(), user_agent: String.t() | nil}
@@ -295,6 +295,7 @@ defmodule C3.Sessions do
     Repo.transaction(fn ->
       agent |> Agent.changeset(%{status: :left, left_at: now}) |> Repo.update!()
       {released, thread_ids} = Threads.release_claims!(agent)
+      Reservations.release_all!(agent, :left, agent)
 
       Events.append!(%Session{id: agent.session_id}, :agent_left,
         actor: agent,
@@ -324,6 +325,7 @@ defmodule C3.Sessions do
       if revoked == 0, do: Repo.rollback(:not_active)
 
       {released, thread_ids} = Threads.release_claims!(agent)
+      Reservations.release_all!(agent, :revoked, nil)
 
       Events.append!(%Session{id: agent.session_id}, :agent_revoked,
         payload: %{name: agent.name, by: "admin", released: released}
@@ -380,6 +382,7 @@ defmodule C3.Sessions do
     |> where([a], a.session_id == ^session_id and a.status == :active)
     |> Repo.update_all(set: [status: :revoked, left_at: now, updated_at: now])
 
+    Reservations.close_session!(session_id, now)
     session = Repo.get!(Session, session_id)
 
     Events.append!(session, :session_closed,

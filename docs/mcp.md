@@ -78,6 +78,10 @@ accept an optional `idempotency_key`, sent as the `Idempotency-Key` header.
 | `c3_record` | `POST /v1/sessions/{code}/knowledge` | `token`, `topic`, `kind`, `summary`, `source`?, `supersedes`? | ✓ |
 | `c3_recall` | `GET /v1/sessions/{code}/knowledge` | `token`, `topic`?, `kind`?, `status`?, `limit`? (1–500) | |
 | `c3_retract` | `POST /v1/knowledge/{entry}/retract` | `token`, `entry` (`K3`), `reason`? | ✓ |
+| `c3_reserve` | `POST /v1/sessions/{code}/reservations` | `token`, `patterns`, `exclusive`?, `ttl_minutes`?, `reason`? | ✓ |
+| `c3_renew` | `POST /v1/sessions/{code}/reservations/renew` | `token`, `reservations`? (`["R1"]`), `ttl_minutes`? | ✓ |
+| `c3_release` | `POST /v1/sessions/{code}/reservations/release` | `token`, `reservations`? | ✓ |
+| `c3_reservations` | `GET /v1/sessions/{code}/reservations` | `token`, `agent`? (`me`, `AG2`), `status`? (`active`, `all`) | |
 | `c3_leave` | `POST /v1/sessions/{code}/leave` | `token` | ✓ |
 | `c3_close_session` | `POST /v1/sessions/{code}/close` | `token` | ✓ |
 
@@ -93,6 +97,9 @@ accept an optional `idempotency_key`, sent as the `Idempotency-Key` header.
 - `c3_record` / `c3_recall` / `c3_retract` are the session's shared memory
   ([api.md › Knowledge](api.md#knowledge-shared-memory)); `c3_finish` takes the same
   `record: {topic, kind, summary, supersedes?}` to record what a thread ended with.
+- `c3_reserve` / `c3_renew` / `c3_release` / `c3_reservations` are advisory reservations of
+  files or named resources ([api.md › Reservations](api.md#reservations)): `c3_renew` and
+  `c3_release` act on all of the caller's active ones unless `reservations` names some.
 - `c3_get_attachment` returns the file inline — `encoding` `text` or `base64` — up to 1 MiB;
   a larger one is a `413` pointing at the REST download.
 

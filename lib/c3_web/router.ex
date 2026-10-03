@@ -131,6 +131,11 @@ defmodule C3Web.Router do
       get "/sessions/:code/knowledge", KnowledgeController, :index
       post "/sessions/:code/knowledge", KnowledgeController, :create
       post "/knowledge/:entry/retract", KnowledgeController, :retract
+
+      get "/sessions/:code/reservations", ReservationController, :index
+      post "/sessions/:code/reservations", ReservationController, :create
+      post "/sessions/:code/reservations/renew", ReservationController, :renew
+      post "/sessions/:code/reservations/release", ReservationController, :release
     end
 
     scope "/" do
