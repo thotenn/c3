@@ -65,8 +65,9 @@ accept an optional `idempotency_key`, sent as the `Idempotency-Key` header.
 | `c3_inbox` | `GET /v1/inbox` | `token` | |
 | `c3_list_threads` | `GET /v1/sessions/{code}/threads` | `token`, `status`?, `awaiting`? (`me`) | |
 | `c3_get_thread` | `GET /v1/threads/{thread}` | `token`, `thread`, `since`? | |
-| `c3_open_thread` | `POST /v1/sessions/{code}/threads` | `token`, `title`, `body`, `to`?, `attachments`? | ✓ |
-| `c3_post` | `POST /v1/threads/{thread}/messages` | `token`, `thread`, `kind`, `body`, `to`?, `reply_to`?, `attachments`? | ✓ |
+| `c3_open_thread` | `POST /v1/sessions/{code}/threads` | `token`, `title`, `body`, `to`?, `importance`?, `ack_required`?, `attachments`? | ✓ |
+| `c3_post` | `POST /v1/threads/{thread}/messages` | `token`, `thread`, `kind`, `body`, `to`?, `importance`?, `ack_required`?, `reply_to`?, `attachments`? | ✓ |
+| `c3_ack` | `POST /v1/threads/{thread}/ack` | `token`, `thread`, `message`? (`T3.2`) | ✓ |
 | `c3_claim` | `POST /v1/threads/{thread}/claim` | `token`, `thread`, `request_id`? | ✓ |
 | `c3_cancel` | `POST /v1/threads/{thread}/cancel` | `token`, `thread`, `request_id`, `reason`? | ✓ |
 | `c3_finish` | `POST /v1/threads/{thread}/finish` | `token`, `thread`, `force`? (boolean), `record`? | ✓ |
@@ -97,6 +98,9 @@ accept an optional `idempotency_key`, sent as the `Idempotency-Key` header.
 - `c3_record` / `c3_recall` / `c3_retract` are the session's shared memory
   ([api.md › Knowledge](api.md#knowledge-shared-memory)); `c3_finish` takes the same
   `record: {topic, kind, summary, supersedes?}` to record what a thread ended with.
+- `importance` (`normal`, `high`, `urgent`) and `ack_required` go on requests and notes
+  ([api.md › Importance and acknowledgements](api.md#importance-and-acknowledgements)); `c3_ack`
+  confirms what `c3_inbox` lists in `to_ack`.
 - `c3_reserve` / `c3_renew` / `c3_release` / `c3_reservations` are advisory reservations of
   files or named resources ([api.md › Reservations](api.md#reservations)): `c3_renew` and
   `c3_release` act on all of the caller's active ones unless `reservations` names some.

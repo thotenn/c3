@@ -68,7 +68,8 @@ defmodule C3.Threads.Queries do
       :to_agent,
       :claimed_by_agent,
       :reply_to_message,
-      attachments: from(a in C3.Threads.Attachment, order_by: a.id)
+      attachments: from(a in C3.Threads.Attachment, order_by: a.id),
+      acks: from(k in C3.Threads.MessageAck, order_by: k.id, preload: :agent)
     ])
   end
 

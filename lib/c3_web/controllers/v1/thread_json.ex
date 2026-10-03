@@ -4,7 +4,7 @@ defmodule C3Web.V1.ThreadJSON do
   agents `AG2`. `status` is the cached one; `awaiting` and `processing_by` are derived.
   """
   alias C3.Threads
-  alias C3.Threads.{Attachment, Message, Targets}
+  alias C3.Threads.{Attachment, Message, MessageAck, Targets}
 
   def index(%{threads: threads, states: states}) do
     %{threads: Enum.map(threads, &summary(&1, Map.fetch!(states, &1.id)))}
@@ -57,17 +57,32 @@ defmodule C3Web.V1.ThreadJSON do
 
   defp attachments(%Message{}), do: []
 
+  # Who was asked to acknowledge, and when they did: only on a message that asked.
+  defp put_acks(map, %Message{ack_required: true, acks: acks}) when is_list(acks) do
+    Map.put(
+      map,
+      :acks,
+      Enum.map(acks, fn %MessageAck{} = k -> %{agent: k.agent.name, acked_at: k.acked_at} end)
+    )
+  end
+
+  defp put_acks(map, %Message{}), do: map
+
   @doc "A message of `thread`; the request fields only on requests."
   def message(thread, %Message{} = m) do
-    base = %{
-      id: Threads.message_ref(thread, m),
-      kind: m.kind,
-      author: m.author_agent && m.author_agent.name,
-      body: m.body,
-      reply_to: m.reply_to_message && Threads.message_ref(thread, m.reply_to_message),
-      attachments: attachments(m),
-      created_at: m.inserted_at
-    }
+    base =
+      %{
+        id: Threads.message_ref(thread, m),
+        kind: m.kind,
+        author: m.author_agent && m.author_agent.name,
+        body: m.body,
+        reply_to: m.reply_to_message && Threads.message_ref(thread, m.reply_to_message),
+        attachments: attachments(m),
+        importance: m.importance,
+        ack_required: m.ack_required,
+        created_at: m.inserted_at
+      }
+      |> put_acks(m)
 
     if m.kind == :request do
       Map.merge(base, %{

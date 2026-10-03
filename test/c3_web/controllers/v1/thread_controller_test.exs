@@ -274,6 +274,96 @@ defmodule C3Web.V1.ThreadControllerTest do
     end
   end
 
+  describe "importance and acks in the inbox" do
+    test "urgent threads first; what to acknowledge in to_ack, until acked", %{s: s} do
+      open(s)
+
+      open(s, %{
+        "title" => "Freeze",
+        "body" => "Stop merging",
+        "to" => "AG2",
+        "importance" => "urgent",
+        "ack_required" => true
+      })
+
+      authed(s.t1)
+      |> post(~p"/v1/threads/T1/messages", %{
+        "kind" => "note",
+        "body" => "Staging is down",
+        "importance" => "high",
+        "ack_required" => true
+      })
+      |> json_response(201)
+
+      assert %{
+               "empty" => false,
+               "threads" => [
+                 %{
+                   "id" => "T2",
+                   "requests" => [
+                     %{
+                       "id" => "T2.1",
+                       "importance" => "urgent",
+                       "ack_required" => true,
+                       "acked" => false
+                     }
+                   ]
+                 },
+                 %{
+                   "id" => "T1",
+                   "requests" => [%{"importance" => "normal", "ack_required" => false} = plain]
+                 }
+               ],
+               "to_ack" => [
+                 %{
+                   "thread" => "T1",
+                   "title" => "Deploy?",
+                   "message" => "T1.2",
+                   "kind" => "note",
+                   "from" => "AG1",
+                   "importance" => "high",
+                   "body" => "Staging is down"
+                 }
+               ]
+             } = authed(s.t2) |> get(~p"/v1/inbox") |> json_response(200)
+
+      refute Map.has_key?(plain, "acked")
+
+      assert %{"acked" => ["T1.2"]} =
+               authed(s.t2) |> post(~p"/v1/threads/T1/ack", %{}) |> json_response(200)
+
+      assert %{"acked" => ["T2.1"]} =
+               authed(s.t2)
+               |> post(~p"/v1/threads/T2/ack", %{"message" => "T2.1"})
+               |> json_response(200)
+
+      assert %{"to_ack" => [], "threads" => [%{"requests" => [%{"acked" => true}]}, _]} =
+               authed(s.t2) |> get(~p"/v1/inbox") |> json_response(200)
+
+      assert %{"messages" => [%{"acks" => [%{"agent" => "AG2", "acked_at" => acked_at}]}]} =
+               authed(s.t1) |> get(~p"/v1/threads/T2") |> json_response(200)
+
+      assert is_binary(acked_at)
+    end
+
+    test "a note with ack is enough to make the inbox not empty", %{s: s} do
+      open(s)
+      authed(s.t2) |> post(~p"/v1/threads/T1/claim", %{}) |> json_response(200)
+      authed(s.t2) |> post(~p"/v1/threads/T1/messages", %{"kind" => "response", "body" => "ok"})
+
+      authed(s.t1)
+      |> post(~p"/v1/threads/T1/messages", %{
+        "kind" => "note",
+        "body" => "Thanks",
+        "ack_required" => true
+      })
+      |> json_response(201)
+
+      assert %{"empty" => false, "threads" => [], "to_ack" => [%{"message" => "T1.3"}]} =
+               authed(s.t2) |> get(~p"/v1/inbox") |> json_response(200)
+    end
+  end
+
   describe "POST /v1/threads/:id/cancel" do
     test "the target sees the cancellation in its inbox once", %{s: s} do
       open(s)

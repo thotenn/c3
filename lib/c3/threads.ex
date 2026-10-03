@@ -20,7 +20,7 @@ defmodule C3.Threads do
 
   alias C3.{Attachments, Config, Events, Knowledge, Repo}
   alias C3.Sessions.{Agent, Session}
-  alias C3.Threads.{Derivation, Message, Targets, Thread}
+  alias C3.Threads.{Acks, Derivation, Message, Targets, Thread}
 
   @pending [:open, :claimed]
 
@@ -49,14 +49,16 @@ defmodule C3.Threads do
   ## Writes
 
   @doc """
-  Opens a thread: `attrs` `"title"`, `"body"`, `"to"` (omitted = `any`) and `"attachments"`
-  (`C3.Attachments`, shared by every request). Creates the thread and one request per
-  target, and emits `thread.opened`.
+  Opens a thread: `attrs` `"title"`, `"body"`, `"to"` (omitted = `any`), `"attachments"`
+  (`C3.Attachments`, shared by every request), and `"importance"` / `"ack_required"`
+  (`C3.Threads.Acks`). Creates the thread and one request per target, and emits
+  `thread.opened`.
   """
   def open_thread(%Agent{} = author, attrs) do
     now = now()
 
     with :ok <- check_body_size(attrs["body"]),
+         {:ok, flags} <- Acks.check_attrs(:request, attrs),
          {:ok, files} <- Attachments.prepare(attrs["attachments"]),
          {:ok, targets} <- Targets.resolve(attrs["to"], author) do
       Attachments.with_cleanup(fn ->
@@ -71,7 +73,8 @@ defmodule C3.Threads do
             |> Repo.insert()
             |> rollback_on_error()
 
-          requests = insert_requests!(thread, author, attrs["body"], targets, nil, 1)
+          requests = insert_requests!(thread, author, attrs["body"], targets, nil, 1, flags)
+          ack_from = ask_requests!(requests, targets, author, flags, now)
           Attachments.store!(thread.session_id, Enum.map(requests, &elem(&1, 0)), files, now)
 
           Events.append!(session(thread), :thread_opened,
@@ -85,6 +88,7 @@ defmodule C3.Threads do
                 to: Enum.map(requests, &elem(&1, 1)),
                 requests: Enum.map(requests, &message_ref(thread, elem(&1, 0)))
               }
+              |> with_flags(flags, ack_from |> Map.values() |> List.flatten() |> Enum.uniq())
               |> with_attachments(files)
           )
 
@@ -97,20 +101,22 @@ defmodule C3.Threads do
 
   @doc """
   Posts to a thread: `attrs` `"kind"` (`request`, `response` or `note`), `"body"`, `"to"`
-  (requests only; one request per target), `"reply_to"` (`T3.2` or `2`) and `"attachments"`
-  (`C3.Attachments`; every request of the post carries them).
+  (requests: one request per target; a note with `ack_required`: whom it asks), `"reply_to"`
+  (`T3.2` or `2`), `"attachments"` (`C3.Attachments`; every request of the post carries them)
+  and, for requests and notes, `"importance"` / `"ack_required"` (`C3.Threads.Acks`).
 
   A `response` resolves the request it replies to — or, without `reply_to`, every request of
-  the thread the author may answer — claiming it on the way if nobody had. Returns
-  `{:ok, %{thread, messages, resolved}}`.
+  the thread the author may answer — claiming it on the way if nobody had, and acknowledges
+  it. Returns `{:ok, %{thread, messages, resolved}}`.
   """
   def post_message(%Agent{} = author, %Thread{id: thread_id}, attrs) do
     now = now()
 
     with {:ok, kind} <- parse_kind(attrs["kind"]),
          :ok <- check_body_size(attrs["body"]),
+         {:ok, flags} <- Acks.check_attrs(kind, attrs),
          {:ok, files} <- Attachments.prepare(attrs["attachments"]),
-         {:ok, targets} <- targets_for(kind, attrs["to"], author) do
+         {:ok, targets} <- post_targets(kind, flags, attrs["to"], author) do
       Attachments.with_cleanup(fn ->
         Repo.transaction(fn ->
           thread = lock_thread!(thread_id, now)
@@ -119,13 +125,21 @@ defmodule C3.Threads do
           reply_to = fetch_reply_to!(thread, attrs["reply_to"])
           number = next_message_number!(thread)
 
-          {messages, resolved, reply_to} =
+          {messages, resolved, reply_to, ack_from} =
             case kind do
               :request ->
                 requests =
-                  insert_requests!(thread, author, attrs["body"], targets, reply_to, number)
+                  insert_requests!(
+                    thread,
+                    author,
+                    attrs["body"],
+                    targets,
+                    reply_to,
+                    number,
+                    flags
+                  )
 
-                {requests, [], reply_to}
+                {requests, [], reply_to, ask_requests!(requests, targets, author, flags, now)}
 
               :response ->
                 to_resolve = resolvable!(thread, author, reply_to)
@@ -135,11 +149,14 @@ defmodule C3.Threads do
                   insert_message!(thread, author, :response, attrs["body"], reply_to, number)
 
                 resolve!(to_resolve, author, now)
-                {[{message, nil}], to_resolve, reply_to}
+                Acks.ack_implicitly!(author, Enum.map(to_resolve, & &1.id), now)
+                {[{message, nil}], to_resolve, reply_to, %{}}
 
               :note ->
-                message = insert_message!(thread, author, :note, attrs["body"], reply_to, number)
-                {[{message, nil}], [], reply_to}
+                message =
+                  insert_message!(thread, author, :note, attrs["body"], reply_to, number, flags)
+
+                {[{message, nil}], [], reply_to, ask_note!(message, targets, author, flags, now)}
             end
 
           Attachments.store!(thread.session_id, Enum.map(messages, &elem(&1, 0)), files, now)
@@ -163,6 +180,7 @@ defmodule C3.Threads do
                   resolved: resolved_refs,
                   resolved_for: resolved_for
                 }
+                |> with_flags(flags, Map.get(ack_from, message.id, []))
                 |> with_attachments(files)
             )
           end
@@ -231,6 +249,7 @@ defmodule C3.Threads do
       end
 
       {thread, _state} = apply_state!(thread, thread.finished_at, me)
+      Acks.ack_implicitly!(me, Enum.map(held ++ claimed, & &1.id), now)
 
       refs = (held ++ claimed) |> Enum.sort_by(& &1.number) |> Enum.map(&message_ref(thread, &1))
       %{thread: thread, claimed: refs}
@@ -429,6 +448,20 @@ defmodule C3.Threads do
   end
 
   @doc """
+  Acknowledges messages of a thread that asked the agent to (`C3.Threads.Acks.ack!/4`):
+  `attrs["message"]` (`T3.4` or `4`), or every pending one of the thread. Also on a finished
+  thread. Returns `{:ok, %{thread, acked}}`.
+  """
+  def ack(%Agent{} = me, %Thread{id: thread_id}, attrs) do
+    now = now()
+
+    Repo.transaction(fn ->
+      thread = lock_thread!(thread_id, now)
+      %{thread: thread, acked: Acks.ack!(me, thread, attrs, now)}
+    end)
+  end
+
+  @doc """
   Puts every request `agent` claimed back to `open`, for `C3.Sessions.leave/1`. Call inside
   a transaction, then `refresh_threads!/2` with the thread ids. Returns `{refs, thread_ids}`.
   """
@@ -585,7 +618,7 @@ defmodule C3.Threads do
   end
 
   # [{message, to_display}], one request per target, numbered from `number`.
-  defp insert_requests!(thread, author, body, targets, reply_to, number) do
+  defp insert_requests!(thread, author, body, targets, reply_to, number, flags) do
     targets
     |> Enum.with_index(number)
     |> Enum.map(fn {target, n} ->
@@ -605,7 +638,9 @@ defmodule C3.Threads do
         thread
         |> message_struct(author, reply_to, fields)
         |> Message.changeset(
-          Map.merge(attrs, %{number: n, kind: :request, body: body, request_state: :open})
+          attrs
+          |> Map.merge(%{number: n, kind: :request, body: body, request_state: :open})
+          |> Map.merge(flags)
         )
         |> Repo.insert()
         |> rollback_on_error()
@@ -614,10 +649,10 @@ defmodule C3.Threads do
     end)
   end
 
-  defp insert_message!(thread, author, kind, body, reply_to, number) do
+  defp insert_message!(thread, author, kind, body, reply_to, number, flags \\ %{}) do
     thread
     |> message_struct(author, reply_to, [])
-    |> Message.changeset(%{number: number, kind: kind, body: body})
+    |> Message.changeset(Map.merge(%{number: number, kind: kind, body: body}, flags))
     |> Repo.insert()
     |> rollback_on_error()
   end
@@ -683,6 +718,34 @@ defmodule C3.Threads do
 
   defp single([one]), do: one
   defp single(_), do: nil
+
+  # A note asks for an ack only through `to`; without `ack_required` it takes none.
+  defp post_targets(:note, %{ack_required: true}, to, author), do: Acks.note_targets(to, author)
+  defp post_targets(kind, _flags, to, author), do: targets_for(kind, to, author)
+
+  # %{message_id => names asked to acknowledge it}; one request per target, in order.
+  defp ask_requests!(_requests, _targets, _author, %{ack_required: false}, _now), do: %{}
+
+  defp ask_requests!(requests, targets, author, _flags, now) do
+    Enum.zip_with(requests, targets, fn {message, _to}, target ->
+      {message.id, Acks.ask!(message, Acks.recipients(author, target), now)}
+    end)
+    |> Map.new()
+  end
+
+  defp ask_note!(_note, _targets, _author, %{ack_required: false}, _now), do: %{}
+
+  defp ask_note!(note, targets, author, _flags, now) do
+    recipients = Enum.flat_map(targets, &Acks.recipients(author, &1))
+    %{note.id => Acks.ask!(note, recipients, now)}
+  end
+
+  # The importance of a message and whom it asks to acknowledge it, when not the default.
+  defp with_flags(payload, %{importance: importance, ack_required: ack?}, ack_from) do
+    payload
+    |> then(&if importance != :normal, do: Map.put(&1, :importance, importance), else: &1)
+    |> then(&if ack?, do: Map.put(&1, :ack_from, ack_from), else: &1)
+  end
 
   # An event payload names the files of the post, when it has any.
   defp with_attachments(payload, []), do: payload

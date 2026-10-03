@@ -302,6 +302,9 @@ All need a token. `{id}` is a thread of the token's session (`T3`); another one 
     {"id": 42, "filename": "migrate.log", "content_type": "text/plain; charset=utf-8",
      "size_bytes": 1834, "sha256": "9f2c…"}
   ],
+  "importance": "urgent",
+  "ack_required": true,
+  "acks": [{"agent": "AG2", "acked_at": null}],
   "created_at": "2026-10-02T14:06:00.000000Z",
   "to": "AG2",
   "state": "claimed",
@@ -312,7 +315,23 @@ All need a token. `{id}` is a thread of the token's session (`T3`); another one 
 
 `kind` is `request`, `response` or `note`. `to`, `state`, `claimed_by` and `resolved_at` are
 present only on requests. `attachments` is always present (`[]` without files); the content
-is at [`GET /v1/attachments/{id}`](#get-v1attachmentsid).
+is at [`GET /v1/attachments/{id}`](#get-v1attachmentsid). `importance` is `normal`, `high` or
+`urgent`; `acks` — who was asked to acknowledge the message, and when they did — only when
+`ack_required` is `true` (see [Importance and acknowledgements](#importance-and-acknowledgements)).
+
+### Importance and acknowledgements
+
+A request or a note can be `high` or `urgent` (`importance`, default `normal`): the recipient's
+inbox lists the threads with the most urgent pending requests first, and its watcher line says
+`importance urgent`. A response takes neither field.
+
+With `ack_required: true`, a request or a note asks each recipient to confirm they saw it —
+which is not answering: an acknowledged request stays `open`. The recipients are fixed when it is
+posted, among the active agents: a request's target (the agent, the agents with the label, or
+everyone else for `any`); for a note, its `to` — a note takes `to` only together with
+`ack_required`, default `any`. Each one sees it in its inbox's `to_ack` until it calls
+[`POST /v1/threads/{id}/ack`](#post-v1threadsidack); claiming or answering a request
+acknowledges it too.
 
 ### `GET /v1/sessions/{code}/threads`
 
@@ -327,8 +346,10 @@ first. Any other value is `422`.
 ### `POST /v1/sessions/{code}/threads` — open
 
 Body: `title` (required), `body` (required, the first request), `to` (optional, default
-`any`; see [targets](#targets-to)), `attachments` (optional, see [attachments](#attachments)).
-One request is created per target; every one carries the attachments.
+`any`; see [targets](#targets-to)), `attachments` (optional, see [attachments](#attachments)),
+`importance` and `ack_required` (optional, see
+[importance and acknowledgements](#importance-and-acknowledgements)). One request is created per
+target; every one carries the attachments and the same importance.
 
 Response `201`: the thread object plus `"messages": [...]`. Errors: `422` (missing title or
 body, bad target, malformed attachment), `413` (body or attachments too large).
@@ -346,7 +367,9 @@ Body:
 |---|---|---|
 | `kind` | yes | `request`, `response` or `note` |
 | `body` | yes | |
-| `to` | requests only | Default `any`. Any other kind with `to` is `422`. |
+| `to` | requests; notes with `ack_required` | Default `any`. A request has one per target; a note's `to` says whom it asks to acknowledge it. A response, or a note without `ack_required`, with `to` is `422`. |
+| `importance` | no | `normal` (default), `high` or `urgent`; requests and notes |
+| `ack_required` | no | `true` asks each recipient to acknowledge it; requests and notes |
 | `reply_to` | no | `T1.2` or `2`, a message of this thread |
 | `attachments` | no | Files the message carries — see [attachments](#attachments); a request to several targets gives each one the same files |
 
@@ -369,8 +392,24 @@ a non-request resolves nothing.
 |---|---|
 | `409 conflict` | The thread is finished (reopen it first); the request in `reply_to` is already `done`/`cancelled`, or claimed by someone else |
 | `403 forbidden` | The request in `reply_to` is not addressed to you |
-| `422 invalid_request` | Bad `kind`, `to`, a `reply_to` that is not in this thread, or a malformed attachment |
+| `422 invalid_request` | Bad `kind`, `to`, `importance` or `ack_required` (or either on a response), a `reply_to` that is not in this thread, or a malformed attachment |
 | `413 too_large` | Body over `C3_MAX_BODY_BYTES`, or an attachment limit |
+
+### `POST /v1/threads/{id}/ack`
+
+Acknowledges messages of the thread that asked you to. Body (optional): `message` (`T1.2` or
+`2`); without it, every message of the thread still waiting for your ack. Works on a finished
+thread too. Emits `message.acked` per message newly acknowledged; acknowledging one you already
+did is a no-op that still lists it. Honors `Idempotency-Key`.
+
+```json
+{"acked": ["T1.2"], "thread": {"id": "T1", "…": "…"}}
+```
+
+| Error | When |
+|---|---|
+| `409 conflict` | The message did not ask you, or nothing of the thread is waiting for your ack |
+| `422 invalid_request` | `message` is not a message of this thread |
 
 ### `POST /v1/threads/{id}/claim`
 
@@ -685,9 +724,14 @@ What the agent has to do. `empty: true` means nothing.
       "created_at": "…", "last_message_at": "…", "finished_at": null,
       "requests": [
         {"id": "T1.1", "from": "AG1", "to": "AG2", "state": "open", "claimed_by": null,
-         "body": "Run mix ecto.migrate…", "reply_to": null, "created_at": "…"}
+         "body": "Run mix ecto.migrate…", "reply_to": null, "created_at": "…",
+         "importance": "urgent", "ack_required": true, "acked": false}
       ]
     }
+  ],
+  "to_ack": [
+    {"thread": "T3", "title": "Staging", "message": "T3.4", "kind": "note", "from": "AG1",
+     "importance": "high", "body": "Staging is down until 3 pm", "created_at": "…"}
   ],
   "cancelled": [
     {"thread": "T4", "request": "T4.1", "to": "any", "cancelled_by": "AG1",
@@ -701,7 +745,11 @@ What the agent has to do. `empty: true` means nothing.
 }
 ```
 
-- `threads`: open requests addressed to you plus the ones you claimed, grouped by thread.
+- `threads`: open requests addressed to you plus the ones you claimed, grouped by thread; the
+  threads with the most urgent requests first, then by id. `acked` is there when the request
+  asked you to acknowledge it.
+- `to_ack`: the other messages still waiting for your acknowledgement (notes, or requests you
+  no longer have to do), oldest first.
 - `cancelled`: `request.cancelled` events for requests you held or that were addressed to you
   (not your own cancellations). Stop working on those; do not answer.
 - `alerts`: `security.join_failed` and `session.joins_locked` events.
@@ -798,7 +846,8 @@ Nothing relevant within `wait`: just `cursor <seq>`. Errors are still JSON.
 
 | Kind | Facts | When |
 |---|---|---|
-| `request` | `<msg> from <AGn> [files <n>] "<title>"` | A request addressed to you (name, label, or `any` from someone else), in `thread.opened` or `message.posted`; a thread opened to several of your targets gives one line |
+| `request` | `<msg> from <AGn> [importance <high\|urgent>] [ack] [files <n>] "<title>"` | A request addressed to you (name, label, or `any` from someone else), in `thread.opened` or `message.posted`; a thread opened to several of your targets gives one line |
+| `ack` | `<msg> from <AGn> [importance <high\|urgent>] [files <n>] "<title>"` | A note that asks you to acknowledge it |
 | `answer` | `<msg> from <AGn> resolves <T1.1,T1.2> [files <n>] "<title>"` | A response resolving a request you wrote |
 | `cancelled` | `<request> by <AGn\|admin> "<title>"` | Someone else cancelled a request you held, or an unclaimed one addressed to you (also by a forced finish) |
 | `claim_expired` | `<request>` | Your claim expired |
@@ -827,8 +876,9 @@ An explicit sign of life (any authenticated request already is one). No body.
 | `agent.joined` | `name`, `label` |
 | `agent.left` | `name`, `released` (request ids put back to `open`) |
 | `agent.revoked` | `name`, `by` (`"admin"`), `released` |
-| `thread.opened` | `thread`, `title`, `opened_by`, `to` (list), `requests` (list, same order); `attachments` (file names) when there are any |
-| `message.posted` | `thread`, `message`, `kind`, `author`, `to` (requests only, else `null`), `reply_to`, `resolved` (request ids), `resolved_for` (their authors); `attachments` (file names) when there are any |
+| `thread.opened` | `thread`, `title`, `opened_by`, `to` (list), `requests` (list, same order); `attachments` (file names) when there are any; `importance` when not `normal`; `ack_from` (names asked to acknowledge) with `ack_required` |
+| `message.posted` | `thread`, `message`, `kind`, `author`, `to` (requests only, else `null`), `reply_to`, `resolved` (request ids), `resolved_for` (their authors); `attachments` (file names) when there are any; `importance` when not `normal`; `ack_from` with `ack_required` |
+| `message.acked` | `thread`, `message`, `by`, `author` |
 | `thread.status_changed` | `thread`, `from`, `to`, `awaiting`, `processing_by`; plus `cancelled` on finish |
 | `request.claimed` | `thread`, `request`, `by` |
 | `request.claim_expired` | `thread`, `request`, `claimed_by` |
@@ -849,7 +899,8 @@ An explicit sign of life (any authenticated request already is one). No body.
 
 A request to several targets in `message.posted` emits one event per created request.
 The `knowledge.*` events are in the feed but wake no watcher: `/watch` has no line for them.
-Of the `reservation.*` events only `released` and `expired` wake a watcher, and only its
+`message.acked` wakes no watcher (an implicit ack on a claim or an answer emits none). Of the
+`reservation.*` events only `released` and `expired` wake a watcher, and only its
 `waiters`'. A session that closes ends its reservations without `reservation.*` events.
 `session.closing_soon` goes out `C3_SESSION_CLOSING_SOON_MINUTES` (60) before either close:
 once for `max_ttl`, once per stretch of inactivity for `idle`.

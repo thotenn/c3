@@ -45,6 +45,18 @@ defmodule C3Web.MCP.Tools do
     "description" => "Optional: the active entry this one replaces (K2); it becomes superseded."
   }
 
+  @importance %{
+    "type" => "string",
+    "enum" => ["normal", "high", "urgent"],
+    "description" =>
+      "Optional, default normal. urgent: the recipient should look before anything else."
+  }
+  @ack_required %{
+    "type" => "boolean",
+    "description" =>
+      "Optional: ask each recipient to confirm they saw it (c3_ack). Not the same as answering."
+  }
+
   @reservation_refs %{
     "type" => "array",
     "items" => %{"type" => "string"},
@@ -169,6 +181,8 @@ defmodule C3Web.MCP.Tools do
         "title" => %{"type" => "string", "description" => "Short title."},
         "body" => %{"type" => "string", "description" => "The request."},
         "to" => @to,
+        "importance" => @importance,
+        "ack_required" => @ack_required,
         "attachments" => @attachments,
         "idempotency_key" => @idempotency_key
       },
@@ -179,13 +193,16 @@ defmodule C3Web.MCP.Tools do
       route: {:post, "/threads/:thread/messages"},
       description:
         "Post to a thread: a request (to someone), a response (resolves the request in " <>
-          "reply_to, or the ones of the thread you are on) or a note.",
+          "reply_to, or the ones of the thread you are on) or a note. Requests and notes take " <>
+          "importance and ack_required; a note with ack_required takes to, for whom it asks.",
       properties: %{
         "token" => @token,
         "thread" => @thread,
         "kind" => %{"type" => "string", "enum" => ["request", "response", "note"]},
         "body" => %{"type" => "string"},
         "to" => @to,
+        "importance" => @importance,
+        "ack_required" => @ack_required,
         "reply_to" => %{
           "type" => "string",
           "description" => "Optional message id (T3.2) this answers."
@@ -304,6 +321,21 @@ defmodule C3Web.MCP.Tools do
         "idempotency_key" => @idempotency_key
       },
       required: ["token", "entry"]
+    },
+    %{
+      name: "c3_ack",
+      route: {:post, "/threads/:thread/ack"},
+      description:
+        "Confirm you saw messages that asked you to (ack_required; c3_inbox lists them in " <>
+          "to_ack): one message, or every pending one of the thread. It does not answer a " <>
+          "request; do that with c3_post.",
+      properties: %{
+        "token" => @token,
+        "thread" => @thread,
+        "message" => %{"type" => "string", "description" => "Optional message id (T3.4)."},
+        "idempotency_key" => @idempotency_key
+      },
+      required: ["token", "thread"]
     },
     %{
       name: "c3_reserve",

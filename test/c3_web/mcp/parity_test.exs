@@ -24,6 +24,7 @@ defmodule C3Web.MCP.ParityTest do
     "c3_cancel" => {:post, "/threads/:thread/cancel"},
     "c3_finish" => {:post, "/threads/:thread/finish"},
     "c3_reopen" => {:post, "/threads/:thread/reopen"},
+    "c3_ack" => {:post, "/threads/:thread/ack"},
     "c3_record" => {:post, "/sessions/:code/knowledge"},
     "c3_recall" => {:get, "/sessions/:code/knowledge"},
     "c3_retract" => {:post, "/knowledge/:entry/retract"},
@@ -41,7 +42,7 @@ defmodule C3Web.MCP.ParityTest do
 
   @masked ~w(session_code secret token at created_at expires_at last_activity_at
              last_seen_at joined_at last_message_at finished_at resolved_at closed_at closes_at
-             released_at banned_until ip subject)
+             released_at acked_at banned_until ip subject)
 
   # Each step: who calls (:a, :b, or :none for no token), the tool and its arguments. `:code`,
   # `:secret` and a token as an argument are filled in from what earlier steps returned.
@@ -106,6 +107,24 @@ defmodule C3Web.MCP.ParityTest do
        "record" => %{"topic" => "deploy", "kind" => "decision", "summary" => "Done on staging"}
      }},
     {:a, "c3_reopen", %{"thread" => "T1"}},
+    {:a, "c3_open_thread",
+     %{
+       "title" => "Freeze",
+       "body" => "Stop merging",
+       "to" => ["AG2"],
+       "importance" => "urgent",
+       "ack_required" => true
+     }},
+    {:a, "c3_post",
+     %{"thread" => "T2", "kind" => "note", "body" => "Back at 3", "ack_required" => true}},
+    {:a, "c3_post",
+     %{"thread" => "T2", "kind" => "response", "body" => "x", "importance" => "high"}},
+    {:b, "c3_inbox", %{}},
+    {:b, "c3_ack", %{"thread" => "T2", "message" => "T2.2"}},
+    {:b, "c3_ack", %{"thread" => "T2"}},
+    {:b, "c3_ack", %{"thread" => "T2"}},
+    {:a, "c3_ack", %{"thread" => "T2", "message" => "T2.9"}},
+    {:a, "c3_get_thread", %{"thread" => "T2"}},
     {:a, "c3_reserve", %{"patterns" => ["repo:c3/lib/**"], "reason" => "refactor"}},
     {:b, "c3_reserve", %{"patterns" => ["repo:c3/lib/c3.ex", "slot:deploy"]}},
     {:b, "c3_reserve", %{"patterns" => ["slot:deploy"], "idempotency_key" => "k3"}},
@@ -189,6 +208,23 @@ defmodule C3Web.MCP.ParityTest do
              {"c3_finish", 200, _}
            ] = knowledge
 
+    # The ack steps did what they say.
+    acks =
+      for {{_, {_, "c3_ack", _}}, {status, body}} <- rest,
+          do: {status, body["acked"] || body["error"]["code"]}
+
+    assert [
+             {200, ["T2.2"]},
+             {200, ["T2.1"]},
+             {409, "conflict"},
+             {422, "invalid_request"}
+           ] = acks
+
+    assert {_, {200, %{"to_ack" => [%{"message" => "T2.2"}], "threads" => [urgent | _]}}} =
+             Enum.find(rest, &match?({{_, {:b, "c3_inbox", _}}, {200, %{"to_ack" => [_]}}}, &1))
+
+    assert %{"id" => "T2", "requests" => [%{"importance" => "urgent", "acked" => false}]} = urgent
+
     # The reservation steps did what they say.
     reservations =
       for {{_, {_, name, _}}, {status, body}} <- rest,
@@ -243,8 +279,11 @@ defmodule C3Web.MCP.ParityTest do
   defp fill(args, who, ctx) do
     args =
       Map.new(args, fn
-        {key, value} when is_atom(value) -> {key, Map.fetch!(ctx, value)}
-        pair -> pair
+        {key, value} when is_atom(value) and not is_boolean(value) ->
+          {key, Map.fetch!(ctx, value)}
+
+        pair ->
+          pair
       end)
 
     case who do

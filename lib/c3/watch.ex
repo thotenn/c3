@@ -7,7 +7,9 @@ defmodule C3.Watch do
   with free text in it. An event concerns `me` when it is:
 
     * a request addressed to it — by name, by its label, or to `any` from someone else —
-      in `thread.opened` or `message.posted` → `request`
+      in `thread.opened` or `message.posted` → `request`, with `importance <high|urgent>`
+      and `ack` when the request has them
+    * a note that asks it to acknowledge it (it is in `ack_from`) → `ack`
     * a response that resolves a request it wrote (`resolved_for`) → `answer`
     * the cancellation of a request it held, or of an unclaimed one addressed to it, by
       someone else → `cancelled`
@@ -22,7 +24,7 @@ defmodule C3.Watch do
 
   What the agent did itself never wakes it. Lines have the form
   `<kind> <seq> <facts…>` — a `request` or `answer` with attachments ends its facts with
-  `files <n>`; the only free text, a thread title, goes last, quoted, on one
+  `files <n>`, after any `importance` and `ack`; the only free text, a thread title, goes last, quoted, on one
   line and cut to 80 characters.
   """
   alias C3.Events.Event
@@ -42,7 +44,7 @@ defmodule C3.Watch do
     |> Enum.zip(p["requests"])
     |> Enum.find(fn {to, _ref} -> for_me?(to, by, me) end)
     |> case do
-      {_to, ref} -> {"request", [ref, "from", by | files(p)]}
+      {_to, ref} -> {"request", [ref, "from", by | flags(p, me) ++ files(p)]}
       nil -> nil
     end
   end
@@ -50,7 +52,12 @@ defmodule C3.Watch do
   defp relevant(:message_posted, %{"author" => by} = p, me) when by != me.name do
     case p["kind"] do
       "request" ->
-        if for_me?(p["to"], by, me), do: {"request", [p["message"], "from", by | files(p)]}
+        if for_me?(p["to"], by, me),
+          do: {"request", [p["message"], "from", by | flags(p, me) ++ files(p)]}
+
+      "note" ->
+        if me.name in (p["ack_from"] || []),
+          do: {"ack", [p["message"], "from", by | importance(p) ++ files(p)]}
 
       "response" ->
         if me.name in (p["resolved_for"] || []),
@@ -105,6 +112,15 @@ defmodule C3.Watch do
 
   defp relevant(_type, _payload, _me), do: nil
 
+  # `importance <high|urgent>` when not normal, and `ack` when it asks `me` to acknowledge it.
+  defp flags(p, me),
+    do: importance(p) ++ if(me.name in (p["ack_from"] || []), do: ["ack"], else: [])
+
+  defp importance(%{"importance" => importance}) when importance in ~w(high urgent),
+    do: ["importance", importance]
+
+  defp importance(_payload), do: []
+
   # `files <n>` when the message carries attachments.
   defp files(%{"attachments" => [_ | _] = names}), do: ["files", length(names)]
   defp files(_payload), do: []
@@ -115,7 +131,8 @@ defmodule C3.Watch do
   defp for_me?("label:" <> label, _author, me), do: label == me.label
   defp for_me?(name, _author, me), do: name == me.name
 
-  defp title(%Event{thread: %{title: title}}, kind) when kind in ~w(request answer cancelled) do
+  defp title(%Event{thread: %{title: title}}, kind)
+       when kind in ~w(request answer cancelled ack) do
     clean =
       title
       |> String.replace(~r/[[:cntrl:]\s]+/u, " ")

@@ -16,6 +16,13 @@ each one is a [GitHub release](https://github.com/thotenn/c3/releases).
   `C3_RESERVATION_MAX_TTL_HOURS`, 24) and ends when its agent leaves, is revoked or the session
   closes. An agent that ran into one gets a `reservation_free` watcher line when it is released or
   expires. New events `reservation.created`, `.renewed`, `.released`, `.expired`.
+- **Importance and acknowledgements.** Requests and notes take `importance` (`normal`, `high`,
+  `urgent`) and `ack_required`: each recipient is asked to confirm it saw the message, which is
+  not answering it. `POST /v1/threads/{id}/ack` and the tool `c3_ack`; claiming or answering a
+  request acknowledges it. The inbox lists the most urgent threads first and a new `to_ack`
+  list; messages carry `importance`, `ack_required` and `acks`; watcher lines say
+  `importance urgent` and `ack`, and a note asking for an ack wakes its recipients with an `ack`
+  line. New event `message.acked`.
 
 ### Upgrading
 

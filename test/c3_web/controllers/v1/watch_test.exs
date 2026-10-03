@@ -163,6 +163,40 @@ defmodule C3Web.V1.WatchTest do
       end
     end
 
+    test "importance and ack go on the request line; a note asking for an ack wakes", %{s: s} do
+      authed(s.t1)
+      |> post(~p"/v1/sessions/#{s.code}/threads", %{
+        "title" => "Freeze",
+        "body" => "Stop merging",
+        "to" => ["AG2", "AG3"],
+        "importance" => "urgent",
+        "ack_required" => true
+      })
+      |> json_response(201)
+
+      assert [~s(request 4 T1.1 from AG1 importance urgent ack "Freeze")] = lines(s, s.t2)
+      assert [~s(request 4 T1.2 from AG1 importance urgent ack "Freeze")] = lines(s, s.t3)
+
+      authed(s.t1)
+      |> post(~p"/v1/threads/T1/messages", %{
+        "kind" => "note",
+        "body" => "Back at 3",
+        "ack_required" => true,
+        "to" => "AG3"
+      })
+      |> json_response(201)
+
+      authed(s.t1)
+      |> post(~p"/v1/threads/T1/messages", %{"kind" => "note", "body" => "fyi"})
+      |> json_response(201)
+
+      assert [~s(ack 5 T1.3 from AG1 "Freeze")] = lines(s, s.t3, 4)
+      assert [] = lines(s, s.t2, 4)
+
+      authed(s.t3) |> post(~p"/v1/threads/T1/ack", %{}) |> json_response(200)
+      assert [] = lines(s, s.t1, 6)
+    end
+
     test "a reservation wakes only its waiters, when it is released or expires", %{s: s} do
       reserve = fn token, patterns, status ->
         authed(token)

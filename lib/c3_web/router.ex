@@ -125,6 +125,7 @@ defmodule C3Web.Router do
       post "/threads/:id/cancel", ThreadController, :cancel
       post "/threads/:id/finish", ThreadController, :finish
       post "/threads/:id/reopen", ThreadController, :reopen
+      post "/threads/:id/ack", ThreadController, :ack
 
       get "/inbox", InboxController, :show
 
