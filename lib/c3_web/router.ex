@@ -129,6 +129,7 @@ defmodule C3Web.Router do
       post "/threads/:id/ack", ThreadController, :ack
 
       get "/inbox", InboxController, :show
+      get "/sessions/:code/search", SearchController, :index
 
       get "/sessions/:code/knowledge", KnowledgeController, :index
       post "/sessions/:code/knowledge", KnowledgeController, :create

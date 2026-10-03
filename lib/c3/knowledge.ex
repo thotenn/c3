@@ -52,18 +52,22 @@ defmodule C3.Knowledge do
     * `"topic"` — that topic and the ones under it (`auth` matches `auth.jwt`)
     * `"kind"` — one kind
     * `"status"` — `active` (default), `superseded`, `retracted` or `all`
+    * `"source"` — a thread (`T3`: the entries of that thread and of its messages) or a
+      message (`T3.4`); the summary a thread was finished with is the entry of `T3`
     * `"limit"` — default #{@default_limit}, at most #{@max_limit}; the latest entries
   """
   def recall(%Agent{session_id: session_id}, params \\ %{}) do
     with {:ok, topic} <- topic_param(params["topic"]),
          {:ok, kind} <- kind_param(params["kind"]),
          {:ok, statuses} <- status_param(params["status"]),
+         {:ok, source} <- source_param(params["source"]),
          {:ok, limit} <- limit_param(params["limit"]) do
       entries =
         Entry
         |> where([k], k.session_id == ^session_id and k.status in ^statuses)
         |> filter_topic(topic)
         |> filter_kind(kind)
+        |> filter_source(source)
         |> order_by(desc: :number)
         |> limit(^limit)
         |> preload([:author_agent, :supersedes])
@@ -367,6 +371,29 @@ defmodule C3.Knowledge do
   defp filter_topic(query, topic) do
     prefix = String.replace(topic, "_", "\\_") <> ".%"
     where(query, [k], k.topic == ^topic or fragment("? LIKE ? ESCAPE '\\'", k.topic, ^prefix))
+  end
+
+  defp source_param(nil), do: {:ok, nil}
+
+  defp source_param(source) when is_binary(source) do
+    if source =~ Entry.source_format(),
+      do: {:ok, source},
+      else:
+        {:error,
+         {:invalid, "source must be a thread or message id (T3, T3.4)",
+          %{source: [inspect(source)]}}}
+  end
+
+  defp source_param(source),
+    do: {:error, {:invalid, "source must be a string", %{source: [inspect(source)]}}}
+
+  # A thread matches its own entries and its messages'; the format has no LIKE wildcards.
+  defp filter_source(query, nil), do: query
+
+  defp filter_source(query, source) do
+    if String.contains?(source, "."),
+      do: where(query, [k], k.source == ^source),
+      else: where(query, [k], k.source == ^source or like(k.source, ^"#{source}.%"))
   end
 
   defp filter_kind(query, nil), do: query

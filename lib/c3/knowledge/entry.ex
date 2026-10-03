@@ -35,6 +35,9 @@ defmodule C3.Knowledge.Entry do
   @doc "A topic: lowercase words of `a-z 0-9 _ -`, joined by dots (`auth`, `db.schema`)."
   def topic_format, do: @topic_format
 
+  @doc "A source: a thread or message id (`T3`, `T3.4`)."
+  def source_format, do: @source_format
+
   @doc "The maximum summary size in bytes (`C3.Config`, `:knowledge_summary_max_bytes`)."
   def max_summary_bytes, do: C3.Config.get(:knowledge_summary_max_bytes)
 

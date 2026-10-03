@@ -23,6 +23,11 @@ each one is a [GitHub release](https://github.com/thotenn/c3/releases).
   list; messages carry `importance`, `ack_required` and `acks`; watcher lines say
   `importance urgent` and `ack`, and a note asking for an ack wakes its recipients with an `ack`
   line. New event `message.acked`.
+- **Search.** `GET /v1/sessions/{code}/search` and `c3_search` find the messages of a session
+  whose body or thread title has every word of `q`, ignoring case, newest first, with a snippet.
+  Plain `LIKE` on `lower()`, portable to Postgres.
+- `recall` / `c3_recall` take `source` (`T3`: the entries of the thread and its messages), which
+  reads back what a thread was finished with.
 - **`c3_start`.** One call to begin or resume: `GET /v1/sessions/{code}/start` (and
   `start: true` on a join) answers the session, the inbox, the active shared memory and the active
   reservations.

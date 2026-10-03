@@ -181,6 +181,23 @@ defmodule C3.KnowledgeTest do
     end
   end
 
+  test "recall by source: a thread gives its entries and its messages'", ctx do
+    {:ok, _} = record(ctx.ag1, %{"source" => "T3"})
+    {:ok, _} = record(ctx.ag1, %{"topic" => "db", "source" => "T3.4"})
+    {:ok, _} = record(ctx.ag1, %{"topic" => "ui", "source" => "T31"})
+    {:ok, _} = record(ctx.ag1, %{"topic" => "ops"})
+
+    refs = fn params ->
+      {:ok, entries} = Knowledge.recall(ctx.ag1, params)
+      Enum.map(entries, &Knowledge.entry_ref/1)
+    end
+
+    assert refs.(%{"source" => "T3"}) == ["K1", "K2"]
+    assert refs.(%{"source" => "T3.4"}) == ["K2"]
+    assert refs.(%{"source" => "T31"}) == ["K3"]
+    assert {:error, {:invalid, _, %{source: _}}} = Knowledge.recall(ctx.ag1, %{"source" => "T%"})
+  end
+
   test "purging the session deletes its entries", ctx do
     {:ok, _} = record(ctx.ag1, %{})
     {:ok, _} = record(ctx.ag2, %{"supersedes" => "K1"})

@@ -78,7 +78,8 @@ accept an optional `idempotency_key`, sent as the `Idempotency-Key` header.
 | `c3_rotate_secret` | `POST /v1/sessions/{code}/rotate-secret` | `token` | |
 | `c3_get_attachment` | `GET /v1/attachments/{id}?format=json` | `token`, `attachment_id` (integer) | |
 | `c3_record` | `POST /v1/sessions/{code}/knowledge` | `token`, `topic`, `kind`, `summary`, `source`?, `supersedes`? | ✓ |
-| `c3_recall` | `GET /v1/sessions/{code}/knowledge` | `token`, `topic`?, `kind`?, `status`?, `limit`? (1–500) | |
+| `c3_recall` | `GET /v1/sessions/{code}/knowledge` | `token`, `topic`?, `kind`?, `status`?, `source`? (`T3`), `limit`? (1–500) | |
+| `c3_search` | `GET /v1/sessions/{code}/search` | `token`, `q`, `thread`?, `kind`?, `limit`? (1–100) | |
 | `c3_retract` | `POST /v1/knowledge/{entry}/retract` | `token`, `entry` (`K3`), `reason`? | ✓ |
 | `c3_reserve` | `POST /v1/sessions/{code}/reservations` | `token`, `patterns`, `exclusive`?, `ttl_minutes`?, `reason`? | ✓ |
 | `c3_renew` | `POST /v1/sessions/{code}/reservations/renew` | `token`, `reservations`? (`["R1"]`), `ttl_minutes`? | ✓ |
@@ -98,7 +99,10 @@ accept an optional `idempotency_key`, sent as the `Idempotency-Key` header.
   `c3-attach.sh` does it without the agent reading the file).
 - `c3_record` / `c3_recall` / `c3_retract` are the session's shared memory
   ([api.md › Knowledge](api.md#knowledge-shared-memory)); `c3_finish` takes the same
-  `record: {topic, kind, summary, supersedes?}` to record what a thread ended with.
+  `record: {topic, kind, summary, supersedes?}` to record what a thread ended with, which
+  `c3_recall` with `source: "T3"` reads back.
+- `c3_search` finds messages of the session by words ([api.md › Search](api.md#search)) and
+  answers snippets; `c3_get_thread` has the whole message.
 - `c3_start` is the one call to begin or resume: with a `token` it resumes, with
   `session_code` and `secret` it joins (keep the token in its answer). Either way it answers the
   session, the inbox, the active shared memory and the active reservations — one tool call

@@ -26,6 +26,7 @@ defmodule C3Web.MCP.ParityTest do
     "c3_finish" => {:post, "/threads/:thread/finish"},
     "c3_reopen" => {:post, "/threads/:thread/reopen"},
     "c3_ack" => {:post, "/threads/:thread/ack"},
+    "c3_search" => {:get, "/sessions/:code/search"},
     "c3_record" => {:post, "/sessions/:code/knowledge"},
     "c3_recall" => {:get, "/sessions/:code/knowledge"},
     "c3_retract" => {:post, "/knowledge/:entry/retract"},
@@ -127,6 +128,10 @@ defmodule C3Web.MCP.ParityTest do
     {:a, "c3_ack", %{"thread" => "T2", "message" => "T2.9"}},
     {:a, "c3_get_thread", %{"thread" => "T2"}},
     {:a, "c3_reserve", %{"patterns" => ["repo:c3/lib/**"], "reason" => "refactor"}},
+    {:a, "c3_search", %{"q" => "the docs"}},
+    {:b, "c3_search", %{"q" => "merging", "thread" => "T2", "kind" => "request", "limit" => 5}},
+    {:b, "c3_search", %{"q" => "x"}},
+    {:a, "c3_recall", %{"source" => "T1"}},
     {:b, "c3_start", %{}},
     {:none, "c3_start", %{"session_code" => :code, "secret" => :secret, "agent_label" => "ci"}},
     {:b, "c3_reserve", %{"patterns" => ["repo:c3/lib/c3.ex", "slot:deploy"]}},
@@ -208,7 +213,8 @@ defmodule C3Web.MCP.ParityTest do
              {"c3_retract", 403, "forbidden"},
              {"c3_retract", 200, "K2"},
              {"c3_retract", 404, "not_found"},
-             {"c3_finish", 200, _}
+             {"c3_finish", 200, _},
+             {"c3_recall", 200, ["K3"]}
            ] = knowledge
 
     # The ack steps did what they say.
@@ -227,6 +233,13 @@ defmodule C3Web.MCP.ParityTest do
              Enum.find(rest, &match?({{_, {:b, "c3_inbox", _}}, {200, %{"to_ack" => [_]}}}, &1))
 
     assert %{"id" => "T2", "requests" => [%{"importance" => "urgent", "acked" => false}]} = urgent
+
+    # The searches found what they looked for.
+    searches =
+      for {{_, {_, "c3_search", _}}, {status, body}} <- rest,
+          do: {status, body["error"]["code"] || Enum.map(body["results"], & &1["message"])}
+
+    assert [{200, ["T1.3"]}, {200, ["T2.1"]}, {422, "invalid_request"}] = searches
 
     # c3_start resumed with the token and joined without it, with the whole picture.
     starts = for {{_, {_, "c3_start", _}}, {status, body}} <- rest, do: {status, body}

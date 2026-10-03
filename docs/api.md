@@ -525,14 +525,16 @@ is a `409`, so the history of a topic is a chain, not a tree.
 ### `GET /v1/sessions/{code}/knowledge` — recall
 
 Query (all optional): `topic` (that topic and the ones under it: `auth` matches `auth.jwt`, not
-`authz`), `kind`, `status` (`active` by default, `superseded`, `retracted`, `all`), `limit`
-(1–500, default 100; the latest ones). Oldest first.
+`authz`), `kind`, `status` (`active` by default, `superseded`, `retracted`, `all`), `source` (a
+thread, `T3`, gives the entries of that thread and of its messages; a message, `T3.4`, its own —
+what a thread was finished with is the entry whose source is the thread), `limit` (1–500, default
+100; the latest ones). Oldest first.
 
 ```json
 {"entries": [{"id": "K2", "topic": "auth", "…": "…"}]}
 ```
 
-Errors: `422 invalid_request` (a bad `topic`, `kind`, `status` or `limit`).
+Errors: `422 invalid_request` (a bad `topic`, `kind`, `status`, `source` or `limit`).
 
 ### `POST /v1/sessions/{code}/knowledge` — record
 
@@ -550,6 +552,32 @@ Only the author of the entry. Body (optional): `reason`, which goes in the
 `knowledge.retracted` event. `200` with the entry, now `retracted`. Honors `Idempotency-Key`.
 
 Errors: `403 forbidden` (not the author), `404 not_found`, `409 conflict` (not active).
+
+---
+
+## Search
+
+### `GET /v1/sessions/{code}/search`
+
+Text search over the messages of the session. Query: `q` (required: words separated by spaces,
+up to 8 of 2 characters or more, 200 bytes in all), and optionally `thread` (`T3`), `kind`
+(`request`, `response`, `note`) and `limit` (1–100, default 20). A message matches when every
+word is in its body or in its thread's title, ignoring case — on SQLite only ASCII letters are
+folded, so `Ñ` does not match `ñ`. `%`, `_` and `\` are literal. Newest first.
+
+```json
+{
+  "results": [
+    {"message": "T1.2", "thread": "T1", "title": "Deploy staging", "kind": "response",
+     "author": "AG2", "snippet": "Done: 3 migrations, all ok…", "created_at": "…"}
+  ]
+}
+```
+
+`snippet` is about 160 characters of the body around the first word found (`…` where it was
+cut); the whole message is in [`GET /v1/threads/{id}`](#get-v1threadsid).
+
+Errors: `422 invalid_request` (no `q`, or a bad `q`, `thread`, `kind` or `limit`).
 
 ---
 
