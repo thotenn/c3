@@ -125,6 +125,23 @@ defmodule C3Web.Admin.Components do
 
       :knowledge_retracted ->
         "#{p["by"]} retracted #{p["entry"]}#{reason(p)}"
+
+      :reservation_created ->
+        mode = if p["exclusive"], do: "exclusive", else: "shared"
+
+        "#{p["agent"]} reserved #{p["reservation"]} #{p["pattern"]} (#{mode}) until #{p["expires_at"]}"
+
+      :reservation_renewed ->
+        "#{p["agent"]} renewed #{p["reservation"]} until #{p["expires_at"]}"
+
+      :reservation_released ->
+        "#{p["agent"]} released #{p["reservation"]} #{p["pattern"]} (#{p["reason"]})"
+
+      :reservation_expired ->
+        "#{p["reservation"]} #{p["pattern"]} of #{p["agent"]} expired"
+
+      :message_acked ->
+        "#{p["by"]} acked #{p["message"]}"
     end
   end
 

@@ -26,7 +26,12 @@ defmodule C3.Events.Event do
     session_closed: "session.closed",
     knowledge_recorded: "knowledge.recorded",
     knowledge_superseded: "knowledge.superseded",
-    knowledge_retracted: "knowledge.retracted"
+    knowledge_retracted: "knowledge.retracted",
+    reservation_created: "reservation.created",
+    reservation_renewed: "reservation.renewed",
+    reservation_released: "reservation.released",
+    reservation_expired: "reservation.expired",
+    message_acked: "message.acked"
   ]
 
   schema "events" do

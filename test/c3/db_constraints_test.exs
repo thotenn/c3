@@ -257,11 +257,84 @@ defmodule C3.DbConstraintsTest do
     end
   end
 
+  describe "importance, acks and reservations (C3-4)" do
+    test "importance is one of normal, high, urgent and defaults to normal",
+         %{thread: t, ag1: ag1} do
+      row = %{
+        thread_id: t.id,
+        session_id: t.session_id,
+        number: unique_int(),
+        kind: "note",
+        author_agent_id: ag1.id,
+        body: "b",
+        inserted_at: now()
+      }
+
+      assert_check("messages", Map.put(row, :importance, "meh"), "messages_importance_check")
+      assert {1, _} = insert("messages", row)
+
+      assert %Message{importance: :normal, ack_required: false} =
+               Repo.get_by!(Message, thread_id: t.id, number: row.number)
+    end
+
+    test "a message ack belongs to a message and an agent", %{thread: t, ag1: ag1, ag2: ag2} do
+      note = note_fixture(t, ag1)
+      row = %{message_id: note.id, session_id: t.session_id, agent_id: ag2.id, inserted_at: now()}
+
+      assert {1, _} = insert("message_acks", row)
+
+      assert_sqlite_error(
+        "UNIQUE constraint failed: message_acks.message_id, message_acks.agent_id",
+        fn -> insert("message_acks", row) end
+      )
+
+      assert_fk("message_acks", %{row | agent_id: -1})
+    end
+
+    test "a reservation is released with a reason, and only then",
+         %{session: session, ag1: ag1} do
+      row = %{
+        session_id: session.id,
+        agent_id: ag1.id,
+        number: 1,
+        pattern: "repo:c3/lib/**",
+        expires_at: now(),
+        inserted_at: now(),
+        updated_at: now()
+      }
+
+      check = "reservations_release_reason_check"
+      assert_check("reservations", Map.put(row, :release_reason, "expired"), check)
+      assert_check("reservations", Map.put(row, :released_at, now()), check)
+
+      assert_check(
+        "reservations",
+        Map.merge(row, %{released_at: now(), release_reason: "bored"}),
+        check
+      )
+
+      assert {1, _} = insert("reservations", row)
+
+      assert {1, _} =
+               insert(
+                 "reservations",
+                 Map.merge(row, %{number: 2, released_at: now(), release_reason: "left"})
+               )
+
+      assert %{exclusive: true, waiters: []} =
+               Repo.get_by!(C3.Reservations.Reservation, session_id: session.id, number: 1)
+
+      assert_fk("reservations", %{row | number: 3, agent_id: -1})
+    end
+  end
+
   test "events, join_failures and ip_bans enums", %{session: session} do
     row = %{session_id: session.id, seq: 1, type: "agent.danced", inserted_at: now()}
     assert_check("events", row, "events_type_check")
     assert {1, _} = insert("events", %{row | type: "session.closing_soon"})
     assert Repo.get_by!(Event, session_id: session.id).payload == %{}
+    assert {1, _} = insert("events", %{row | seq: 2, type: "reservation.expired"})
+    assert {1, _} = insert("events", %{row | seq: 3, type: "message.acked"})
 
     jf = %{ip: "ip", reason: "bad_luck", attempted_code: "C3-X", inserted_at: now()}
     assert_check("join_failures", jf, "join_failures_reason_check")
@@ -296,6 +369,35 @@ defmodule C3.DbConstraintsTest do
       assert %JoinFailure{session_id: nil} = Repo.reload!(failure)
       assert Repo.reload!(ban).session_code == session.code
       assert Repo.reload!(other_agent)
+    end
+
+    test "purging a session deletes its reservations and message acks",
+         %{session: session, ag1: ag1, ag2: ag2, thread: thread} do
+      note = note_fixture(thread, ag1)
+
+      insert("message_acks", %{
+        message_id: note.id,
+        session_id: session.id,
+        agent_id: ag2.id,
+        inserted_at: now()
+      })
+
+      insert("reservations", %{
+        session_id: session.id,
+        agent_id: ag1.id,
+        number: 1,
+        pattern: "slot:deploy",
+        expires_at: now(),
+        inserted_at: now(),
+        updated_at: now()
+      })
+
+      Repo.update_all(where(Session, id: ^session.id), set: [status: :closed, closed_at: now()])
+      assert {:ok, _} = C3.Sessions.Lifecycle.purge_session(session.id)
+
+      for table <- ["reservations", "message_acks"] do
+        assert Repo.aggregate(from(r in table, where: r.session_id == ^session.id), :count) == 0
+      end
     end
   end
 end

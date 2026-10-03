@@ -21,9 +21,10 @@ defmodule C3.Sessions.Lifecycle do
   alias C3.{Attachments, Config, Events, Repo, Sessions}
   alias C3.Events.Event
   alias C3.Knowledge.Entry
+  alias C3.Reservations.Reservation
   alias C3.Security.JoinFailure
   alias C3.Sessions.{Agent, IdempotencyKey, Session}
-  alias C3.Threads.{Attachment, Message, Thread}
+  alias C3.Threads.{Attachment, Message, MessageAck, Thread}
 
   @doc "Emits the due `session.closing_soon` warnings. Returns how many."
   def warn_closing(now \\ DateTime.utc_now()) do
@@ -134,7 +135,9 @@ defmodule C3.Sessions.Lifecycle do
     Repo.delete_all(from k in IdempotencyKey, where: k.agent_id in subquery(agents))
     Repo.delete_all(from a in Attachment, where: a.session_id == ^session_id)
     Repo.delete_all(from k in Entry, where: k.session_id == ^session_id)
+    Repo.delete_all(from r in Reservation, where: r.session_id == ^session_id)
     Repo.delete_all(from e in Event, where: e.session_id == ^session_id)
+    Repo.delete_all(from a in MessageAck, where: a.session_id == ^session_id)
     Repo.delete_all(from m in Message, where: m.session_id == ^session_id)
     Repo.delete_all(from t in Thread, where: t.session_id == ^session_id)
     Repo.delete_all(from a in Agent, where: a.session_id == ^session_id)

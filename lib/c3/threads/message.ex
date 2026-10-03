@@ -7,7 +7,7 @@ defmodule C3.Threads.Message do
   use C3.Schema
 
   alias C3.Sessions.{Agent, Session}
-  alias C3.Threads.{Attachment, Thread}
+  alias C3.Threads.{Attachment, MessageAck, Thread}
 
   schema "messages" do
     field :number, :integer
@@ -18,6 +18,8 @@ defmodule C3.Threads.Message do
     field :request_state, Ecto.Enum, values: [:open, :claimed, :done, :cancelled]
     field :claimed_at, :utc_datetime_usec
     field :resolved_at, :utc_datetime_usec
+    field :importance, Ecto.Enum, values: [:normal, :high, :urgent], default: :normal
+    field :ack_required, :boolean, default: false
 
     belongs_to :thread, Thread
     belongs_to :session, Session
@@ -26,11 +28,13 @@ defmodule C3.Threads.Message do
     belongs_to :reply_to_message, __MODULE__
     belongs_to :claimed_by_agent, Agent
     has_many :attachments, Attachment
+    has_many :acks, MessageAck
 
     timestamps(updated_at: false)
   end
 
-  @fields ~w(number kind body to_target to_label request_state claimed_at resolved_at)a
+  @fields ~w(number kind body to_target to_label request_state claimed_at resolved_at importance
+             ack_required)a
 
   @doc "The maximum body size in bytes (`C3.Config`, `:max_body_bytes`)."
   def max_body_bytes, do: C3.Config.get(:max_body_bytes)
@@ -62,6 +66,7 @@ defmodule C3.Threads.Message do
     |> check_constraint(:to_label, name: :messages_to_label_check)
     |> check_constraint(:request_state, name: :messages_request_state_check)
     |> check_constraint(:claimed_by_agent_id, name: :messages_claimed_by_check)
+    |> check_constraint(:importance, name: :messages_importance_check)
   end
 
   defp kind(changeset), do: get_field(changeset, :kind)

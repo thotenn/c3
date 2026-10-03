@@ -14,6 +14,7 @@ defmodule C3.Sessions.Session do
     field :next_agent_number, :integer, default: 1
     field :next_thread_number, :integer, default: 1
     field :next_knowledge_number, :integer, default: 1
+    field :next_reservation_number, :integer, default: 1
     field :event_seq, :integer, default: 0
     field :last_activity_at, :utc_datetime_usec, autogenerate: {DateTime, :utc_now, []}
     field :expires_at, :utc_datetime_usec
@@ -28,7 +29,7 @@ defmodule C3.Sessions.Session do
   end
 
   @fields ~w(code secret_hash label status joins_locked_at next_agent_number next_thread_number
-             next_knowledge_number event_seq last_activity_at expires_at closed_at closed_by close_reason)a
+             next_knowledge_number next_reservation_number event_seq last_activity_at expires_at closed_at closed_by close_reason)a
 
   def changeset(session, attrs) do
     session
@@ -38,6 +39,7 @@ defmodule C3.Sessions.Session do
     |> validate_number(:next_agent_number, greater_than_or_equal_to: 1)
     |> validate_number(:next_thread_number, greater_than_or_equal_to: 1)
     |> validate_number(:next_knowledge_number, greater_than_or_equal_to: 1)
+    |> validate_number(:next_reservation_number, greater_than_or_equal_to: 1)
     |> validate_number(:event_seq, greater_than_or_equal_to: 0)
     |> validate_format(:closed_by, ~r/^(AG[1-9][0-9]*|system|admin)$/)
     |> validate_present_iff(:closed_at, &(get_field(&1, :status) == :closed), "when closed")

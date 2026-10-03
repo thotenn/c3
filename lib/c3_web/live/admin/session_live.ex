@@ -24,7 +24,8 @@ defmodule C3Web.Admin.SessionLive do
 
   @agent_types ~w(agent_joined agent_left agent_revoked session_closed)a
   @thread_types ~w(thread_opened message_posted thread_status_changed request_claimed
-                   request_claim_expired request_cancelled agent_left agent_revoked)a
+                   request_claim_expired request_cancelled agent_left agent_revoked
+                   message_acked)a
 
   @impl true
   def mount(%{"code" => code}, _session, socket) do
