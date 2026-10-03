@@ -210,6 +210,23 @@ defmodule C3Web.AdminLiveTest do
       refute has_element?(view, "#unlock-joins")
     end
 
+    test "shows the knowledge events of a session", %{conn: conn} do
+      %{session: s, ag1: ag1, ag2: ag2} = two_agents!()
+      base = %{"topic" => "db", "kind" => "decision", "summary" => "Postgres"}
+      {:ok, _} = C3.Knowledge.record(ag1, base)
+
+      {:ok, _} =
+        C3.Knowledge.record(ag2, Map.merge(base, %{"summary" => "SQLite", "supersedes" => "K1"}))
+
+      {:ok, _} = C3.Knowledge.retract(ag2, "K2", %{"reason" => "not yet"})
+
+      {:ok, view, _html} = live(conn, ~p"/admin/sessions/#{s.code}")
+
+      assert has_element?(view, "#events li", "AG1 recorded K1 decision on db")
+      assert has_element?(view, "#events li", "K1 superseded by K2 (AG2)")
+      assert has_element?(view, "#events li", "AG2 retracted K2: not yet")
+    end
+
     test "an unknown code goes back to the list", %{conn: conn} do
       assert {:error, {:live_redirect, %{to: "/admin"}}} =
                live(conn, ~p"/admin/sessions/C3-ZZZZ-ZZZZ")

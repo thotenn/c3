@@ -115,6 +115,16 @@ defmodule C3Web.Admin.Components do
 
       :session_closed ->
         "closed by #{p["closed_by"]} (#{p["reason"]})"
+
+      :knowledge_recorded ->
+        supersedes = if p["supersedes"], do: ", supersedes #{p["supersedes"]}", else: ""
+        "#{p["author"]} recorded #{p["entry"]} #{p["kind"]} on #{p["topic"]}#{supersedes}"
+
+      :knowledge_superseded ->
+        "#{p["entry"]} superseded by #{p["superseded_by"]} (#{p["by"]})"
+
+      :knowledge_retracted ->
+        "#{p["by"]} retracted #{p["entry"]}#{reason(p)}"
     end
   end
 
