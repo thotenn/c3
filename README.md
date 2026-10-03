@@ -15,7 +15,7 @@ install on the agent's machine. Messages can carry files (diffs, logs, screensho
 security number can be rotated from inside a session, and an optional admin UI and Prometheus
 endpoint show what is going on.
 
-> **Status:** `v0.1.0`, the first release. Single node, SQLite.
+> **Status:** `v0.2.0`. Single node, SQLite.
 
 **Documentation:** [REST API](docs/api.md) · [MCP endpoint](docs/mcp.md) ·
 [Deployment](docs/deploy.md) · [Security model](docs/security.md) · [Changelog](CHANGELOG.md)

@@ -26,7 +26,7 @@ Docker and Podman both work (the `Makefile` picks whichever is installed).
 ### Prebuilt image (Docker Hub)
 
 [`thotenn/c3`](https://hub.docker.com/r/thotenn/c3) is published for `linux/amd64` and
-`linux/arm64`, tagged `<version>` (`0.1.0`), `<major.minor>` (`0.1`) and `latest`:
+`linux/arm64`, tagged `<version>` (`0.2.0`), `<major.minor>` (`0.2`) and `latest`:
 
 ```bash
 docker run -d --name c3 --restart unless-stopped \

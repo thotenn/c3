@@ -3,7 +3,7 @@
 All notable changes to C3, newest first. Versions follow [Semantic Versioning](https://semver.org/);
 each one is a [GitHub release](https://github.com/thotenn/c3/releases).
 
-## Unreleased
+## 0.2.0 — 2026-10-03
 
 ### Added
 
@@ -31,7 +31,8 @@ each one is a [GitHub release](https://github.com/thotenn/c3/releases).
   a ban. `ip_bans` and `join_failures` keep the exact address in a new `ip_full` column (shown in
   the admin); `security.join_failed` adds `subject` and `banned_until`. `unban` and the allowlist
   take the network. Migration `AddIpFull` rewrites the IPv6 rows already stored.
-- Plugin 0.1.1: the skill and the `c3_join_session` description describe the new policy.
+- Plugin: the skill and the `c3_join_session` description describe the new policy (first shipped
+  in plugin 0.1.1 on `main`; part of plugin 0.2.0).
 
 ### Docs
 
