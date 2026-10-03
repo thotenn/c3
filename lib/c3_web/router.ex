@@ -127,6 +127,10 @@ defmodule C3Web.Router do
       post "/threads/:id/reopen", ThreadController, :reopen
 
       get "/inbox", InboxController, :show
+
+      get "/sessions/:code/knowledge", KnowledgeController, :index
+      post "/sessions/:code/knowledge", KnowledgeController, :create
+      post "/knowledge/:entry/retract", KnowledgeController, :retract
     end
 
     scope "/" do

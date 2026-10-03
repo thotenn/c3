@@ -23,6 +23,7 @@ defmodule C3.Config do
   | `:rate_limit_token` | `C3_RATE_LIMIT_TOKEN` | `120` requests per minute and token |
   | `:rate_limit_ip` | `C3_RATE_LIMIT_IP` | `300` requests per minute and IP |
   | `:max_body_bytes` | `C3_MAX_BODY_BYTES` | `65536` — a message body, in bytes; over it → `413` |
+  | `:knowledge_summary_max_bytes` | `C3_KNOWLEDGE_SUMMARY_MAX_BYTES` | `2048` — the summary of a knowledge entry, in bytes; over it → `413` |
   | `:attachment_max_bytes` | `C3_ATTACHMENT_MAX_BYTES` | 5 MiB — one attached file |
   | `:attachments_message_max_bytes` | `C3_ATTACHMENTS_MESSAGE_MAX_BYTES` | 10 MiB — every file of one post together |
   | `:attachments_session_max_bytes` | `C3_ATTACHMENTS_SESSION_MAX_BYTES` | 50 MiB — every file of a session together |
@@ -58,6 +59,7 @@ defmodule C3.Config do
     rate_limit_ip: 300,
     rate_limit_window_ms: 60_000,
     max_body_bytes: 65_536,
+    knowledge_summary_max_bytes: 2048,
     attachment_max_bytes: 5 * 1024 * 1024,
     attachments_message_max_bytes: 10 * 1024 * 1024,
     attachments_session_max_bytes: 50 * 1024 * 1024,
@@ -129,6 +131,7 @@ defmodule C3.Config do
     end
 
     for key <- [
+          :knowledge_summary_max_bytes,
           :attachment_max_bytes,
           :attachments_message_max_bytes,
           :attachments_session_max_bytes

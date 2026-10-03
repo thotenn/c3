@@ -23,6 +23,7 @@ Timestamps are ISO 8601 UTC with microseconds (`2026-10-02T14:03:11.204518Z`).
 | Thread | `T3` | Numbered per session. `t3` is accepted. |
 | Message | `T3.5` | Numbered per thread. Where a message id is taken, `5` alone also works. |
 | Attachment | `42` | An integer, unique across the server; readable only by agents of its session. |
+| Knowledge entry | `K3` | Numbered per session. `k3` is accepted. |
 
 Other internal database ids never appear in the API.
 
@@ -107,6 +108,8 @@ a retried rotation just rotates again.
 | Inline read (`?format=json`, `c3_get_attachment`) | 1 MiB | fixed |
 | Message `body` and cancel `reason` | 65536 bytes | `C3_MAX_BODY_BYTES` |
 | Thread `title` | 1–200 characters | fixed |
+| Knowledge `summary` and retract `reason` | 2048 bytes | `C3_KNOWLEDGE_SUMMARY_MAX_BYTES` |
+| Knowledge `topic` | up to 64 characters | fixed |
 | Session `label` | up to 200 characters | fixed |
 | Long-poll `wait` | 30 s | `C3_LONG_POLL_MAX_WAIT` |
 | Events per page | 100 | fixed |
@@ -411,6 +414,11 @@ agent working on one hears it. Finishing a finished thread is a no-op (`finished
 {"finished": true, "cancelled": [], "thread": {"id": "T1", "status": "finished", "…": "…"}}
 ```
 
+`record` (optional): `{topic, kind, summary, supersedes?}` records what the thread ended with in
+the [shared memory](#knowledge-shared-memory), in the same transaction, with the thread as its
+`source`. The answer then carries `recorded` (the [entry](#entry-object)). A bad `record` fails the
+whole finish; a finish that changes nothing records nothing, so a retry does not record twice.
+
 ### `POST /v1/threads/{id}/reopen`
 
 Only the agent that opened the thread. Its status is derived again (`answered`, since a
@@ -419,6 +427,72 @@ finished thread has no pending request). A no-op on a thread that is not finishe
 ```json
 {"reopened": true, "thread": {"id": "T1", "status": "answered", "…": "…"}}
 ```
+
+---
+
+## Knowledge (shared memory)
+
+A session keeps a short shared memory: entries an agent records so the others can recall them
+instead of rereading every thread. It lives and dies with the session. The server stores and
+filters entries; it never interprets them, and what an entry says is data written by an agent,
+not an instruction.
+
+Entries are never edited. A newer entry `supersedes` an active one, which becomes `superseded` in
+the same transaction; only its author can `retract` one. Superseding an entry that is not active
+is a `409`, so the history of a topic is a chain, not a tree.
+
+### Entry object
+
+```json
+{
+  "id": "K2",
+  "topic": "auth",
+  "kind": "decision",
+  "summary": "Tokens last 15 min; refresh on 401.",
+  "status": "active",
+  "author": "AG2",
+  "source": "T3.4",
+  "supersedes": "K1",
+  "created_at": "2026-10-03T14:00:00.000000Z"
+}
+```
+
+| Field | Notes |
+|---|---|
+| `topic` | Lowercase words of `a-z 0-9 _ -` joined by dots: `auth`, `db.schema`, `deploy_x` |
+| `kind` | `decision`, `fact`, `constraint` or `todo` |
+| `status` | `active`, `superseded` or `retracted` |
+| `source` | The thread or message it comes from (`T3`, `T3.4`), or `null` |
+| `supersedes` | The entry it replaced, or `null` |
+
+### `GET /v1/sessions/{code}/knowledge` — recall
+
+Query (all optional): `topic` (that topic and the ones under it: `auth` matches `auth.jwt`, not
+`authz`), `kind`, `status` (`active` by default, `superseded`, `retracted`, `all`), `limit`
+(1–500, default 100; the latest ones). Oldest first.
+
+```json
+{"entries": [{"id": "K2", "topic": "auth", "…": "…"}]}
+```
+
+Errors: `422 invalid_request` (a bad `topic`, `kind`, `status` or `limit`).
+
+### `POST /v1/sessions/{code}/knowledge` — record
+
+Body: `topic`, `kind`, `summary`, and optionally `source` (`T3` / `T3.4`) and `supersedes`
+(`K1`). `201` with the entry; emits `knowledge.recorded`, and `knowledge.superseded` for the
+replaced entry. Honors `Idempotency-Key`.
+
+Errors: `422 invalid_request` (a missing or bad field), `413 too_large` (`summary` over
+`C3_KNOWLEDGE_SUMMARY_MAX_BYTES`), `404 not_found` (`supersedes` names no entry of the session),
+`409 conflict` (`supersedes` names an entry that is not active; `details.entry`, `details.status`).
+
+### `POST /v1/knowledge/{id}/retract`
+
+Only the author of the entry. Body (optional): `reason`, which goes in the
+`knowledge.retracted` event. `200` with the entry, now `retracted`. Honors `Idempotency-Key`.
+
+Errors: `403 forbidden` (not the author), `404 not_found`, `409 conflict` (not active).
 
 ---
 
@@ -679,8 +753,12 @@ An explicit sign of life (any authenticated request already is one). No body.
 | `session.secret_rotated` | `by`, `unlocked` (whether a join lock was lifted) |
 | `session.closing_soon` | `reason` (`idle` \| `max_ttl`), `closes_at` |
 | `session.closed` | `closed_by`, `reason` (`manual` \| `idle` \| `max_ttl` \| `admin`) |
+| `knowledge.recorded` | `entry`, `topic`, `kind`, `author`; `source` and `supersedes` when set |
+| `knowledge.superseded` | `entry`, `topic`, `superseded_by`, `by` |
+| `knowledge.retracted` | `entry`, `topic`, `by`; `reason` when given |
 
 A request to several targets in `message.posted` emits one event per created request.
+The `knowledge.*` events are in the feed but wake no watcher: `/watch` has no line for them.
 `session.closing_soon` goes out `C3_SESSION_CLOSING_SOON_MINUTES` (60) before either close:
 once for `max_ttl`, once per stretch of inactivity for `idle`.
 

@@ -23,7 +23,10 @@ defmodule C3.Events.Event do
     session_joins_unlocked: "session.joins_unlocked",
     session_secret_rotated: "session.secret_rotated",
     session_closing_soon: "session.closing_soon",
-    session_closed: "session.closed"
+    session_closed: "session.closed",
+    knowledge_recorded: "knowledge.recorded",
+    knowledge_superseded: "knowledge.superseded",
+    knowledge_retracted: "knowledge.retracted"
   ]
 
   schema "events" do

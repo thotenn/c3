@@ -141,6 +141,26 @@ defmodule C3Web.V1.WatchTest do
       assert [] = lines(s, s.t1, cursor)
     end
 
+    test "knowledge entries wake nobody, but move the cursor", %{s: s} do
+      record = fn token, attrs ->
+        authed(token)
+        |> post(
+          ~p"/v1/sessions/#{s.code}/knowledge",
+          Map.merge(%{"topic" => "auth", "kind" => "decision", "summary" => "JWT"}, attrs)
+        )
+        |> json_response(201)
+      end
+
+      record.(s.t1, %{})
+      record.(s.t2, %{"supersedes" => "K1"})
+      authed(s.t2) |> post(~p"/v1/knowledge/K2/retract", %{}) |> json_response(200)
+
+      for token <- [s.t1, s.t2, s.t3] do
+        assert {cursor, []} = watch(s, token, after: 3)
+        assert cursor == 7
+      end
+    end
+
     test "is held through other agents' events until one concerns the caller", %{s: s} do
       task =
         Task.async(fn ->

@@ -18,7 +18,7 @@ defmodule C3.Threads do
   """
   import Ecto.Query
 
-  alias C3.{Attachments, Config, Events, Repo}
+  alias C3.{Attachments, Config, Events, Knowledge, Repo}
   alias C3.Sessions.{Agent, Session}
   alias C3.Threads.{Derivation, Message, Targets, Thread}
 
@@ -319,19 +319,29 @@ defmodule C3.Threads do
   Finishes a thread. Only the agent that opened it can. With pending requests it is a `409`
   unless `attrs["force"]` is true, which cancels them — each with a `request.cancelled`, so
   the agent working on one learns to stop, as with `cancel/3`. Finishing a finished thread
-  is a no-op. Returns `{:ok, %{thread, changed, cancelled}}`.
+  is a no-op. Returns `{:ok, %{thread, changed, cancelled, recorded}}`.
+
+  `attrs["record"]` (`topic`, `kind`, `summary`, optional `supersedes`) records what the
+  thread ended with in `C3.Knowledge`, in the same transaction, with the thread as its
+  `source`; `recorded` is that entry, or `nil`. A finish that changes nothing records nothing,
+  so a retry does not record twice.
   """
   def finish(%Agent{} = me, %Thread{} = thread, attrs) do
-    finish_thread(thread, me, attrs["force"] in [true, "true"])
+    with {:ok, record} <- record_attrs(attrs["record"]) do
+      finish_thread(thread, me, attrs["force"] in [true, "true"], record)
+    end
   end
+
+  defp record_attrs(nil), do: {:ok, nil}
+  defp record_attrs(record), do: Knowledge.check_attrs(record)
 
   @doc """
   The admin finishes a thread (spec, decision 10): always forced, the pending requests are
   cancelled with `cancelled_by: "admin"`. Same result as `finish/3`.
   """
-  def admin_finish(%Thread{} = thread), do: finish_thread(thread, :admin, true)
+  def admin_finish(%Thread{} = thread), do: finish_thread(thread, :admin, true, nil)
 
-  defp finish_thread(%Thread{id: thread_id}, me, force?) do
+  defp finish_thread(%Thread{id: thread_id}, me, force?, record) do
     now = now()
     actor = if match?(%Agent{}, me), do: me
     by = if actor, do: actor.name, else: "admin"
@@ -341,7 +351,7 @@ defmodule C3.Threads do
       if actor, do: check_opened_by!(thread, actor)
 
       if thread.finished_at do
-        %{thread: thread, changed: false, cancelled: []}
+        %{thread: thread, changed: false, cancelled: [], recorded: nil}
       else
         pending =
           Message
@@ -388,8 +398,11 @@ defmodule C3.Threads do
           )
         end
 
+        recorded =
+          record && Knowledge.record!(actor, Map.put(record, "source", thread_ref(thread)))
+
         {thread, _state} = apply_state!(thread, now, actor, %{cancelled: refs})
-        %{thread: thread, changed: true, cancelled: refs}
+        %{thread: thread, changed: true, cancelled: refs, recorded: recorded}
       end
     end)
   end

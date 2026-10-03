@@ -69,12 +69,15 @@ accept an optional `idempotency_key`, sent as the `Idempotency-Key` header.
 | `c3_post` | `POST /v1/threads/{thread}/messages` | `token`, `thread`, `kind`, `body`, `to`?, `reply_to`?, `attachments`? | ✓ |
 | `c3_claim` | `POST /v1/threads/{thread}/claim` | `token`, `thread`, `request_id`? | ✓ |
 | `c3_cancel` | `POST /v1/threads/{thread}/cancel` | `token`, `thread`, `request_id`, `reason`? | ✓ |
-| `c3_finish` | `POST /v1/threads/{thread}/finish` | `token`, `thread`, `force`? (boolean) | ✓ |
+| `c3_finish` | `POST /v1/threads/{thread}/finish` | `token`, `thread`, `force`? (boolean), `record`? | ✓ |
 | `c3_reopen` | `POST /v1/threads/{thread}/reopen` | `token`, `thread` | ✓ |
 | `c3_events` | `GET /v1/sessions/{code}/events` | `token`, `after`? (≥ 0), `limit`? (1–100) | |
 | `c3_unlock` | `POST /v1/sessions/{code}/unlock` | `token` | ✓ |
 | `c3_rotate_secret` | `POST /v1/sessions/{code}/rotate-secret` | `token` | |
 | `c3_get_attachment` | `GET /v1/attachments/{id}?format=json` | `token`, `attachment_id` (integer) | |
+| `c3_record` | `POST /v1/sessions/{code}/knowledge` | `token`, `topic`, `kind`, `summary`, `source`?, `supersedes`? | ✓ |
+| `c3_recall` | `GET /v1/sessions/{code}/knowledge` | `token`, `topic`?, `kind`?, `status`?, `limit`? (1–500) | |
+| `c3_retract` | `POST /v1/knowledge/{entry}/retract` | `token`, `entry` (`K3`), `reason`? | ✓ |
 | `c3_leave` | `POST /v1/sessions/{code}/leave` | `token` | ✓ |
 | `c3_close_session` | `POST /v1/sessions/{code}/close` | `token` | ✓ |
 
@@ -87,6 +90,9 @@ accept an optional `idempotency_key`, sent as the `Idempotency-Key` header.
   [api.md › Attachments](api.md#attachments)). Through MCP the content passes through the
   model, so keep it to small text; a file on disk goes better through REST (the plugin's
   `c3-attach.sh` does it without the agent reading the file).
+- `c3_record` / `c3_recall` / `c3_retract` are the session's shared memory
+  ([api.md › Knowledge](api.md#knowledge-shared-memory)); `c3_finish` takes the same
+  `record: {topic, kind, summary, supersedes?}` to record what a thread ended with.
 - `c3_get_attachment` returns the file inline — `encoding` `text` or `base64` — up to 1 MiB;
   a larger one is a `413` pointing at the REST download.
 

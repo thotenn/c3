@@ -20,6 +20,7 @@ defmodule C3.Sessions.Lifecycle do
 
   alias C3.{Attachments, Config, Events, Repo, Sessions}
   alias C3.Events.Event
+  alias C3.Knowledge.Entry
   alias C3.Security.JoinFailure
   alias C3.Sessions.{Agent, IdempotencyKey, Session}
   alias C3.Threads.{Attachment, Message, Thread}
@@ -132,6 +133,7 @@ defmodule C3.Sessions.Lifecycle do
 
     Repo.delete_all(from k in IdempotencyKey, where: k.agent_id in subquery(agents))
     Repo.delete_all(from a in Attachment, where: a.session_id == ^session_id)
+    Repo.delete_all(from k in Entry, where: k.session_id == ^session_id)
     Repo.delete_all(from e in Event, where: e.session_id == ^session_id)
     Repo.delete_all(from m in Message, where: m.session_id == ^session_id)
     Repo.delete_all(from t in Thread, where: t.session_id == ^session_id)
