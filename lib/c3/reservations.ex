@@ -96,17 +96,22 @@ defmodule C3.Reservations do
           now = DateTime.utc_now()
           lock_session!(me.session_id)
           active = active(me.session_id, now)
-          ids = MapSet.new(active, & &1.id)
+          by_id = Map.new(active, &{&1.id, &1})
           fresh = Enum.reject(active, &MapSet.member?(seen, &1.id))
+
+          # The snapshot's rows may be stale (waiters, expires_at): use the ones read under the lock.
+          early =
+            for {pattern, other} <- early,
+                Map.has_key?(by_id, other.id),
+                do: {pattern, Map.fetch!(by_id, other.id)}
 
           late =
             case conflicts(fresh, me, patterns, exclusive?, budget) do
               {:ok, late, _budget} -> late
-              {:error, reason} -> Repo.rollback(reason)
+              {:error, error} -> Repo.rollback(error)
             end
 
-          case Enum.filter(early, fn {_pattern, other} -> MapSet.member?(ids, other.id) end) ++
-                 late do
+          case early ++ late do
             [] ->
               reserve!(me, active, patterns, exclusive?, reason, DateTime.add(now, ttl), now)
 
