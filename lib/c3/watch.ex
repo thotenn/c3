@@ -24,8 +24,9 @@ defmodule C3.Watch do
 
   What the agent did itself never wakes it. Lines have the form
   `<kind> <seq> <facts…>` — a `request` or `answer` with attachments ends its facts with
-  `files <n>`, after any `importance` and `ack`; the only free text, a thread title, goes last, quoted, on one
-  line and cut to 80 characters.
+  `files <n>`, after any `importance` and `ack`; the only free text, a thread title, goes
+  last, quoted, on one line and cut to 80 characters. A reservation's pattern, written by an
+  agent, has no spaces or control characters, so it stays one fact; like a title, it is data.
   """
   alias C3.Events.Event
   alias C3.Sessions.Agent

@@ -46,6 +46,17 @@ defmodule C3.Reservations.GlobTest do
     end
   end
 
+  test "overlap/3 counts against a budget, and gives up past it" do
+    assert {:ok, true, left} = Glob.overlap("repo:c3/lib/**", "repo:c3/lib/c3.ex", 1_000)
+    assert left in 900..999
+
+    a = "repo:x/*" <> String.duplicate("a", 200)
+    b = "repo:x/*" <> String.duplicate("a", 200) <> "b"
+    assert :too_complex = Glob.overlap(a, b, 1_000)
+    assert {:ok, false, _} = Glob.overlap(a, b, 1_000_000)
+    assert Glob.wildcards("repo:c3/**/*_test.ex?") == 3
+  end
+
   test "long patterns full of stars stay fast" do
     a = "repo:x/" <> String.duplicate("*a", 60)
     b = "repo:x/" <> String.duplicate("a*", 60) <> "b"

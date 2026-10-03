@@ -7,15 +7,40 @@ defmodule C3.Reservations.Glob do
   `?` is one character but `/`, `*` any run without `/`, `**` any run at all. Everything else,
   `[`, `{` and `\\` included, is literal. A directory is reserved as `dir/**`, which does not
   match `dir` itself.
+
+  The cost is up to the product of the two lengths (a pair of 256-byte patterns full of `*`
+  takes tens of milliseconds): `overlap/3` counts it against a budget the caller shares
+  across all the pairs of one request.
   """
+
+  @doc "How many wildcards (`?`, `*`, `**`) a pattern has."
+  def wildcards(pattern) when is_binary(pattern),
+    do: pattern |> tokens() |> Enum.count(&(&1 in [:one, :star, :globstar]))
 
   @doc "True when some string matches both `a` and `b`."
   def overlap?(a, b) when is_binary(a) and is_binary(b) do
-    a = a |> tokens() |> List.to_tuple()
-    b = b |> tokens() |> List.to_tuple()
-    {result, _memo} = overlap(a, b, 0, 0, %{})
+    {:ok, result, _left} = overlap(a, b, :infinity)
     result
   end
+
+  @doc """
+  `overlap?/2` within `budget` steps: `{:ok, overlap?, budget_left}`, or `:too_complex` when
+  the patterns need more.
+  """
+  def overlap(a, b, budget) when is_binary(a) and is_binary(b) do
+    a = a |> tokens() |> List.to_tuple()
+    b = b |> tokens() |> List.to_tuple()
+
+    try do
+      {result, memo} = overlap(a, b, 0, 0, %{budget: budget})
+      {:ok, result, left(budget, map_size(memo) - 1)}
+    catch
+      :too_complex -> :too_complex
+    end
+  end
+
+  defp left(:infinity, _used), do: :infinity
+  defp left(budget, used), do: budget - used
 
   # Walks both patterns at once; a state is a pair of positions, and every move goes forward
   # in at least one of them. A star may match nothing (skip it), or take one more character
@@ -24,6 +49,9 @@ defmodule C3.Reservations.Glob do
     case memo do
       %{{^i, ^j} => result} ->
         {result, memo}
+
+      %{budget: budget} when is_integer(budget) and map_size(memo) > budget ->
+        throw(:too_complex)
 
       _ ->
         {result, memo} = any_state(a, b, moves(token(a, i), token(b, j), i, j), memo)

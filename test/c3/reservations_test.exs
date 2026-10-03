@@ -117,6 +117,31 @@ defmodule C3.ReservationsTest do
     end
   end
 
+  describe "the cost of comparing globs" do
+    test "a pattern takes at most 10 wildcards", ctx do
+      assert {:ok, [_]} = reserve(ctx.ag1, ["repo:x/" <> String.duplicate("*/", 10) <> "a"])
+
+      assert {:error, {:invalid, message, %{patterns: _}}} =
+               reserve(ctx.ag1, ["repo:x/" <> String.duplicate("?", 11)])
+
+      assert message =~ "10 wildcards"
+    end
+
+    test "patterns too costly to compare are a 422, quickly, and reserve nothing", ctx do
+      pad = String.duplicate("a", 200)
+      held = for n <- 1..5, do: "repo:x/*#{n}" <> pad <> String.duplicate("*a", 9)
+      {:ok, _} = reserve(ctx.ag1, held)
+
+      asked = for n <- 1..20, do: "repo:x/" <> String.duplicate("a*", 9) <> pad <> "#{n}*b"
+      {micros, result} = :timer.tc(fn -> reserve(ctx.ag2, asked) end)
+
+      assert {:error, {:invalid, message, %{patterns: _}}} = result
+      assert message =~ "too complex"
+      assert micros < 2_000_000
+      assert Repo.aggregate(where(Reservation, agent_id: ^ctx.ag2.id), :count) == 0
+    end
+  end
+
   describe "renew/2 and release/2" do
     setup ctx do
       {:ok, _} = reserve(ctx.ag1, ["repo:c3/lib/**", "slot:deploy"])

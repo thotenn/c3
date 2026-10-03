@@ -11,7 +11,10 @@ defmodule C3.Reservations do
   blocked it, which `reservation.released` / `reservation.expired` name so their watchers wake.
 
   Every write locks the session row first (an `UPDATE` that changes nothing), so two agents
-  reserving at once are serialized on Postgres too.
+  reserving at once are serialized on Postgres too. Comparing globs can be slow, and on SQLite
+  the lock stops every writer of the node, so `reserve/2` compares against a snapshot before
+  taking it, and under the lock only against what was reserved since; the comparisons of one
+  call share a budget, over which it is a `422`.
 
   Errors are `{:error, reason}` with `reason` one of `:reservation_not_found`,
   `{:invalid, message, details}`, `{:forbidden, message}` or `{:conflict, message, details}`.
@@ -23,6 +26,8 @@ defmodule C3.Reservations do
   alias C3.Sessions.{Agent, Session}
 
   @max_patterns 20
+  @max_wildcards 10
+  @overlap_budget 200_000
   @max_active 100
 
   ## Refs
@@ -82,25 +87,34 @@ defmodule C3.Reservations do
          {:ok, exclusive?} <- exclusive_param(attrs["exclusive"]),
          {:ok, ttl} <- ttl_param(attrs["ttl_minutes"]),
          {:ok, reason} <- reason_param(attrs["reason"]) do
-      Repo.transaction(fn ->
-        now = DateTime.utc_now()
-        lock_session!(me.session_id)
+      snapshot = active(me.session_id, DateTime.utc_now())
 
-        active =
-          Reservation
-          |> where(session_id: ^me.session_id)
-          |> where_active(now)
-          |> preload(:agent)
-          |> Repo.all()
+      with {:ok, early, budget} <- conflicts(snapshot, me, patterns, exclusive?, @overlap_budget) do
+        seen = MapSet.new(snapshot, & &1.id)
 
-        case conflicts(active, me, patterns, exclusive?) do
-          [] ->
-            reserve!(me, active, patterns, exclusive?, reason, DateTime.add(now, ttl), now)
+        Repo.transaction(fn ->
+          now = DateTime.utc_now()
+          lock_session!(me.session_id)
+          active = active(me.session_id, now)
+          ids = MapSet.new(active, & &1.id)
+          fresh = Enum.reject(active, &MapSet.member?(seen, &1.id))
 
-          conflicts ->
-            {:conflict, add_waiter!(conflicts, me, now)}
-        end
-      end)
+          late =
+            case conflicts(fresh, me, patterns, exclusive?, budget) do
+              {:ok, late, _budget} -> late
+              {:error, reason} -> Repo.rollback(reason)
+            end
+
+          case Enum.filter(early, fn {_pattern, other} -> MapSet.member?(ids, other.id) end) ++
+                 late do
+            [] ->
+              reserve!(me, active, patterns, exclusive?, reason, DateTime.add(now, ttl), now)
+
+            conflicts ->
+              {:conflict, add_waiter!(conflicts, me, now)}
+          end
+        end)
+      end
       |> case do
         {:ok, {:conflict, conflicts}} ->
           {:error,
@@ -293,14 +307,38 @@ defmodule C3.Reservations do
   defp held(mine, pattern, exclusive?),
     do: Enum.find(mine, &(&1.pattern == pattern and &1.exclusive == exclusive?))
 
-  # [{requested pattern, blocking reservation}], in the order of the request.
-  defp conflicts(active, me, patterns, exclusive?) do
-    for pattern <- patterns,
-        other <- active,
-        other.agent_id != me.id,
-        exclusive? or other.exclusive,
-        Glob.overlap?(pattern, other.pattern),
-        do: {pattern, other}
+  defp active(session_id, now) do
+    Reservation
+    |> where(session_id: ^session_id)
+    |> where_active(now)
+    |> preload(:agent)
+    |> Repo.all()
+  end
+
+  # `{:ok, [{requested pattern, blocking reservation}], budget_left}`, in the order of the
+  # request, or a `422` when the globs need more than `budget` steps to compare.
+  defp conflicts(active, me, patterns, exclusive?, budget) do
+    pairs =
+      for pattern <- patterns,
+          other <- active,
+          other.agent_id != me.id,
+          exclusive? or other.exclusive,
+          do: {pattern, other}
+
+    Enum.reduce_while(pairs, {:ok, [], budget}, fn {pattern, other} = pair, {:ok, acc, budget} ->
+      case Glob.overlap(pattern, other.pattern, budget) do
+        {:ok, true, budget} -> {:cont, {:ok, [pair | acc], budget}}
+        {:ok, false, budget} -> {:cont, {:ok, acc, budget}}
+        :too_complex -> {:halt, :too_complex}
+      end
+    end)
+    |> case do
+      {:ok, found, budget} ->
+        {:ok, Enum.reverse(found), budget}
+
+      :too_complex ->
+        invalid(:patterns, "These patterns are too complex to compare; use fewer wildcards")
+    end
   end
 
   # Commits the asker among the waiters of what blocked it: the caller turns the result into
@@ -467,6 +505,9 @@ defmodule C3.Reservations do
           "each pattern must be <namespace>:<glob> (repo:c3/lib/**, slot:deploy), " <>
             "up to 256 bytes, without spaces"
         )
+
+      Enum.any?(patterns, &(Glob.wildcards(&1) > @max_wildcards)) ->
+        invalid(:patterns, "a pattern takes at most #{@max_wildcards} wildcards (?, *, **)")
 
       true ->
         {:ok, Enum.uniq(patterns)}

@@ -591,7 +591,7 @@ is revoked or whose session closes loses its reservations.
 
 A pattern is `<namespace>:<glob>`: `repo:<repo name>/<path glob>` for files (`repo:c3/lib/**`),
 `slot:<name>` for anything else (`slot:deploy`). The namespace is `a-z 0-9 _ -`; the pattern has
-no spaces and is at most 256 bytes. In the glob, `?` is one character but `/`, `*` any run without
+no spaces, is at most 256 bytes and has at most 10 wildcards. In the glob, `?` is one character but `/`, `*` any run without
 `/`, `**` any run at all; everything else is literal. A directory is reserved as `dir/**`.
 
 Two reservations **conflict** when they belong to different agents, at least one is exclusive, and
@@ -639,7 +639,8 @@ already holds with the same exclusivity is renewed, not duplicated. `201` with
 `{"reservations": [...]}`; emits `reservation.created` (or `reservation.renewed`) per pattern.
 Honors `Idempotency-Key`. An agent holds at most 100 active reservations.
 
-Errors: `422 invalid_request` (a bad pattern or field, too many), `409 conflict` — nothing is
+Errors: `422 invalid_request` (a bad pattern or field, too many, or patterns too costly to compare
+against the session's reservations — fewer wildcards fix it), `409 conflict` — nothing is
 reserved, and `details.conflicts` lists each clash:
 
 ```json

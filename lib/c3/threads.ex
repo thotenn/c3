@@ -88,7 +88,10 @@ defmodule C3.Threads do
                 to: Enum.map(requests, &elem(&1, 1)),
                 requests: Enum.map(requests, &message_ref(thread, elem(&1, 0)))
               }
-              |> with_flags(flags, ack_from |> Map.values() |> List.flatten() |> Enum.uniq())
+              |> with_flags(
+                flags,
+                requests |> Enum.flat_map(&Map.get(ack_from, elem(&1, 0).id, [])) |> Enum.uniq()
+              )
               |> with_attachments(files)
           )
 
