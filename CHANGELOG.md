@@ -31,6 +31,9 @@ each one is a [GitHub release](https://github.com/thotenn/c3/releases).
 - **`c3_start`.** One call to begin or resume: `GET /v1/sessions/{code}/start` (and
   `start: true` on a join) answers the session, the inbox, the active shared memory and the active
   reservations.
+- Plugin 0.3.0: the skill teaches to reserve before editing and release when done, what to do on a
+  `409` and on `reservation_free`, `importance` and `ack_required` (and the `ack` line),
+  `c3_start` after saving the watcher state, `c3_search`, and `c3_recall` by `source`.
 
 ### Upgrading
 

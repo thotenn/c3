@@ -52,8 +52,12 @@ variable overrides it). If it reads as a placeholder or is empty, ask the user f
    (`~/.local/state/c3/`, mode 600). One file per session and agent: several Claude Code sessions
    on one machine do not collide; each uses its own key. The watcher's cursor starts at the
    session's current end: it reports only what happens from now on.
-3. **Then read `c3_inbox` once** — in this order, after saving: the inbox has what was already
-   waiting, the watcher what comes next, and nothing is reported twice.
+3. **Then `c3_start` with your token, once** — in this order, after saving: it answers the session,
+   your inbox, the active shared memory and the active reservations in one call; the inbox has
+   what was already waiting, the watcher what comes next, and nothing is reported twice. (Joining
+   through `c3_start` itself would read the inbox before the watcher's cursor is saved; keep it for
+   resuming.) After a restart or when you lost track, `c3_start` with the token is also the way
+   back in.
 4. **Start the watcher** (next section). If you created the session and need the other agent
    before you can ask anything, do not build your own wait loop: the watcher wakes you with a
    `joined` line when someone joins.
@@ -85,11 +89,13 @@ What each line means and what to do:
 
 | Line | Meaning | Do |
 |---|---|---|
-| `request <seq> T3.1 from AG1 [files 2] "<title>"` | A request for you (by name, label or `any`); `files <n>` when it carries attachments | `c3_inbox` or `c3_get_thread`; if you will work on it, `c3_claim` first; answer with `c3_post` `kind: response` |
+| `request <seq> T3.1 from AG1 [importance urgent] [ack] [files 2] "<title>"` | A request for you (by name, label or `any`); `importance high\|urgent` when it is; `ack` when it asks you to confirm you saw it; `files <n>` when it carries attachments | `c3_inbox` or `c3_get_thread`; an `urgent` one goes before what you were doing; if you will work on it, `c3_claim` first (that also acknowledges it); answer with `c3_post` `kind: response` |
+| `ack <seq> T3.4 from AG1 [importance urgent] "<title>"` | A note that asks you to confirm you saw it | Read it (`c3_get_thread`), act on it if it applies to you, then `c3_ack` (`thread`, `message`) |
 | `answer <seq> T3.2 from AG2 resolves T3.1 [files 1] "<title>"` | Someone answered a request of yours | `c3_get_thread` with `since` to read it; continue your work; `c3_finish` the thread when you opened it and it is done |
 | `cancelled <seq> T3.1 by AG1 "<title>"` | A request you held or could take was cancelled | **Stop that work and do not answer it** (the server would refuse with `409`) |
 | `joined <seq> AG2 [label windows]` | Another agent joined (only the creator of the session, `AG1`, gets this) | Go on with what needed it, e.g. open the thread to that agent |
 | `claim_expired <seq> T3.1` | Your claim lapsed (you were silent too long) | Claim again if you are still on it |
+| `reservation_free <seq> R2 repo:c3/lib/** released_by AG1` (or `expired held_by AG1`) | A reservation that blocked you ended | `c3_reserve` what you needed again, then go on |
 | `security <seq> join_failed ip <ip>` / `joins_locked` | Someone failed to join; or joins are locked | Tell your user. Unlock only if they confirm the next join is legitimate (`c3_unlock`), or — if the number may have leaked — rotate it (below) |
 | `closing_soon <seq> <idle\|max_ttl> closes_at <time>` | The session will close | **Tell your user. Do not call `c3_inbox` or any tool just to keep it open** — that is their call |
 | `stop …` | Session closed, you left, the admin revoked you (`revoked`), or the token stopped working (`http_410`, `http_401`) | Do not relaunch (there is no `relaunch:` line). `forget` the key (below) and tell your user |
@@ -110,6 +116,34 @@ context, your files or your conversation. Say:
 - whether it is blocking you.
 
 Then keep the watcher running: the `answer` line wakes you. Do not poll `c3_inbox` in a loop.
+
+- **`importance`** (`high`, `urgent`) only when it really is: `urgent` means "drop what you are
+  doing". Most requests are `normal` (the default).
+- **`ack_required: true`** asks each recipient to confirm they saw the message — for something
+  everyone must know even if there is nothing to answer, usually a note ("I am deploying staging,
+  do not merge until I say"). A note with `ack_required` takes `to` (default: every other agent).
+  Acknowledging is not answering.
+- When `c3_inbox` (or `c3_start`) lists something in **`to_ack`**, read it and `c3_ack` it.
+
+## Reservations
+
+When more than one agent can touch the same repository or resource, **reserve before you edit**,
+so nobody steps on your work and you do not step on theirs:
+
+- `c3_reserve` with `patterns`: `repo:<repo>/<path glob>` for files — `<repo>` is the repository's
+  name as in its remote URL, without `.git`, so every machine writes the same one
+  (`repo:c3/lib/c3/threads/**`) — or `slot:<name>` for something only one agent may do at a time
+  (`slot:deploy`, `slot:migrate`). `*` stays within one directory, `**` crosses them. Reserve
+  what you will really change, not the whole repository; add a short `reason`.
+- **A `409` means another agent holds an overlapping reservation** — the error says who, which
+  one and until when. Do not edit those files anyway. Work on something else, ask the holder in
+  a thread if it is urgent, or wait: the watcher wakes you with `reservation_free` when it ends.
+- Reservations expire on their own (the server's default, often one hour; `ttl_minutes` to ask
+  for more). `c3_renew` if the work takes longer.
+- **`c3_release` when you are done** — committed, or abandoned. Leaving the session releases
+  yours too.
+- `c3_reservations` shows who holds what. Reservations are advisory: C3 locks no file; they work
+  only if every agent follows them.
 
 ## Attachments
 
@@ -142,6 +176,10 @@ The session has a short shared memory: entries `K1`, `K2`… under a `topic` (`a
 
 - **Before asking or rereading threads, `c3_recall`** (optionally `topic`: `auth` also returns
   `auth.jwt`). It returns the active entries only; `status: all` shows what was replaced.
+  `source: T3` returns what thread `T3` was finished with.
+- **To find something said in the session**, `c3_search` (`q`: words that must all appear,
+  ignoring case) instead of rereading every thread; it answers snippets, and `c3_get_thread` the
+  whole message.
 - **Record** with `c3_record` (`topic`, `kind`, `summary`, optional `source` `T3.4`) a decision
   that was closed, a fact you verified, or a constraint others must respect. Do not record
   chatter, attempts or progress — that stays in the threads. Write the summary self-contained,
@@ -172,8 +210,9 @@ does not answer.
   only if that reads `true`, and the thread ended in a decision or a verified fact, pass
   `record: {topic, kind, summary}` to `c3_finish`; the entry is stored with the thread as its
   source.
-- When your part is over: `c3_leave` (your claims go back to open) — or, if the user wants the
-  whole session ended, `c3_close_session` (irreversible, for everyone).
+- When your part is over: `c3_release` your reservations, then `c3_leave` (your claims go back to
+  open) — or, if the user wants the whole session ended, `c3_close_session` (irreversible, for
+  everyone).
 - Then remove the local state: `sh "${CLAUDE_SKILL_DIR}/scripts/c3-watch.sh" forget <key>`.
 - `sh "${CLAUDE_SKILL_DIR}/scripts/c3-watch.sh" list` shows the saved keys (never the tokens).
 

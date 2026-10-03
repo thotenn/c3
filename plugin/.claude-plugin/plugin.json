@@ -1,8 +1,8 @@
 {
   "name": "c3",
   "displayName": "C3",
-  "version": "0.2.0",
-  "description": "Coordinate with AI agents on other machines through a C3 server: remote MCP tools, a skill, and a watcher that wakes the agent when a request, an answer or a cancellation is for it",
+  "version": "0.3.0",
+  "description": "Coordinate with AI agents on other machines through a C3 server: remote MCP tools, a skill, and a watcher that wakes the agent when a request, an answer, a cancellation or a freed reservation is for it",
   "author": { "name": "thotenn" },
   "homepage": "https://github.com/thotenn/c3",
   "repository": "https://github.com/thotenn/c3",
