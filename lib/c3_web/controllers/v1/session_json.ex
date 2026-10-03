@@ -4,6 +4,7 @@ defmodule C3Web.V1.SessionJSON do
   clear secret and token appear only in `created` and `joined`.
   """
   alias C3.Sessions.{Agent, Session}
+  alias C3Web.V1.{InboxJSON, KnowledgeJSON, ReservationJSON}
 
   def created(%{session: session, agent: agent, secret: secret, token: token}) do
     %{
@@ -14,8 +15,19 @@ defmodule C3Web.V1.SessionJSON do
     }
   end
 
-  def joined(%{session: session, agent: agent, token: token}) do
+  def joined(%{session: session, agent: agent, token: token} = joined) do
     %{session_code: session.code, agent: agent(agent, token), expires_at: session.expires_at}
+    |> then(&if joined[:start], do: Map.put(&1, :start, start(joined.start)), else: &1)
+  end
+
+  @doc "What an agent reads when it begins or resumes: the session, inbox, memory, reservations."
+  def start(%{show: show, inbox: inbox, knowledge: knowledge, reservations: reservations}) do
+    %{
+      session: show(show),
+      inbox: InboxJSON.show(inbox),
+      knowledge: Enum.map(knowledge, &KnowledgeJSON.entry/1),
+      reservations: Enum.map(reservations, &ReservationJSON.reservation/1)
+    }
   end
 
   def show(%{session: session, you: you, agents: agents, threads: threads}) do

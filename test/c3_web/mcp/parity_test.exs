@@ -15,6 +15,7 @@ defmodule C3Web.MCP.ParityTest do
     "c3_create_session" => {:post, "/sessions"},
     "c3_join_session" => {:post, "/sessions/:code/join"},
     "c3_session" => {:get, "/sessions/:code"},
+    "c3_start" => {:get, "/sessions/:code/start"},
     "c3_inbox" => {:get, "/inbox"},
     "c3_list_threads" => {:get, "/sessions/:code/threads"},
     "c3_get_thread" => {:get, "/threads/:thread"},
@@ -126,6 +127,8 @@ defmodule C3Web.MCP.ParityTest do
     {:a, "c3_ack", %{"thread" => "T2", "message" => "T2.9"}},
     {:a, "c3_get_thread", %{"thread" => "T2"}},
     {:a, "c3_reserve", %{"patterns" => ["repo:c3/lib/**"], "reason" => "refactor"}},
+    {:b, "c3_start", %{}},
+    {:none, "c3_start", %{"session_code" => :code, "secret" => :secret, "agent_label" => "ci"}},
     {:b, "c3_reserve", %{"patterns" => ["repo:c3/lib/c3.ex", "slot:deploy"]}},
     {:b, "c3_reserve", %{"patterns" => ["slot:deploy"], "idempotency_key" => "k3"}},
     {:b, "c3_reserve", %{"patterns" => ["no namespace"]}},
@@ -225,6 +228,28 @@ defmodule C3Web.MCP.ParityTest do
 
     assert %{"id" => "T2", "requests" => [%{"importance" => "urgent", "acked" => false}]} = urgent
 
+    # c3_start resumed with the token and joined without it, with the whole picture.
+    starts = for {{_, {_, "c3_start", _}}, {status, body}} <- rest, do: {status, body}
+
+    assert [
+             {200,
+              %{
+                "session" => %{"you" => "AG2", "agents" => [_, _]},
+                "inbox" => %{"you" => "AG2", "to_ack" => []},
+                "knowledge" => [%{"id" => "K3"}],
+                "reservations" => [%{"id" => "R1", "agent" => "AG1"}]
+              }},
+             {201,
+              %{
+                "agent" => %{"name" => "AG3", "label" => "ci"},
+                "start" => %{
+                  "session" => %{"you" => "AG3", "agents" => [_, _, _]},
+                  "inbox" => %{"empty" => true},
+                  "reservations" => [%{"id" => "R1"}]
+                }
+              }}
+           ] = starts
+
     # The reservation steps did what they say.
     reservations =
       for {{_, {_, name, _}}, {status, body}} <- rest,
@@ -304,8 +329,15 @@ defmodule C3Web.MCP.ParityTest do
 
   defp learn(ctx, _name, _body), do: ctx
 
-  defp rest_call(conn, name, args) do
-    {method, route} = Map.fetch!(@routes, name)
+  # c3_start without a token joins, asking for the start bundle.
+  defp rest_call(conn, "c3_start", %{"session_code" => _} = args)
+       when not is_map_key(args, "token") do
+    with_route(conn, "c3_start", {:post, "/sessions/:code/join"}, Map.put(args, "start", true))
+  end
+
+  defp rest_call(conn, name, args), do: with_route(conn, name, Map.fetch!(@routes, name), args)
+
+  defp with_route(conn, name, {method, route}, args) do
     {token, args} = Map.pop(args, "token")
     {key, args} = Map.pop(args, "idempotency_key")
     {code, args} = Map.pop(args, "session_code")

@@ -61,6 +61,7 @@ accept an optional `idempotency_key`, sent as the `Idempotency-Key` header.
 |---|---|---|---|
 | `c3_create_session` | `POST /v1/sessions` | `label`?, `agent_label`? | |
 | `c3_join_session` | `POST /v1/sessions/{code}/join` | `session_code`, `secret`, `agent_label`? | |
+| `c3_start` | `GET /v1/sessions/{code}/start` with `token`; `POST /v1/sessions/{code}/join` with `start: true` without it | `token`, or `session_code` + `secret` + `agent_label`? | |
 | `c3_session` | `GET /v1/sessions/{code}` | `token` | |
 | `c3_inbox` | `GET /v1/inbox` | `token` | |
 | `c3_list_threads` | `GET /v1/sessions/{code}/threads` | `token`, `status`?, `awaiting`? (`me`) | |
@@ -98,6 +99,10 @@ accept an optional `idempotency_key`, sent as the `Idempotency-Key` header.
 - `c3_record` / `c3_recall` / `c3_retract` are the session's shared memory
   ([api.md › Knowledge](api.md#knowledge-shared-memory)); `c3_finish` takes the same
   `record: {topic, kind, summary, supersedes?}` to record what a thread ended with.
+- `c3_start` is the one call to begin or resume: with a `token` it resumes, with
+  `session_code` and `secret` it joins (keep the token in its answer). Either way it answers the
+  session, the inbox, the active shared memory and the active reservations — one tool call
+  instead of four. It is the only tool with two routes; which one depends on the arguments.
 - `importance` (`normal`, `high`, `urgent`) and `ack_required` go on requests and notes
   ([api.md › Importance and acknowledgements](api.md#importance-and-acknowledgements)); `c3_ack`
   confirms what `c3_inbox` lists in `to_ack`.

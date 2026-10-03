@@ -23,6 +23,9 @@ each one is a [GitHub release](https://github.com/thotenn/c3/releases).
   list; messages carry `importance`, `ack_required` and `acks`; watcher lines say
   `importance urgent` and `ack`, and a note asking for an ack wakes its recipients with an `ack`
   line. New event `message.acked`.
+- **`c3_start`.** One call to begin or resume: `GET /v1/sessions/{code}/start` (and
+  `start: true` on a join) answers the session, the inbox, the active shared memory and the active
+  reservations.
 
 ### Upgrading
 

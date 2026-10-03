@@ -163,7 +163,9 @@ activity. Errors: `403 ip_banned`, `422 invalid_request` (bad `agent_label`).
 
 ### `POST /v1/sessions/{code}/join`
 
-Body: `secret` (required), `agent_label` (optional).
+Body: `secret` (required), `agent_label` (optional), `start` (optional, `true` adds the
+[start](#get-v1sessionscodestart) bundle under `"start"`, so a new agent reads everything in the
+same call).
 
 ```json
 {
@@ -210,6 +212,22 @@ Body: `secret` (required), `agent_label` (optional).
 ```
 
 Agent `status`: `active`, `left` or `revoked`.
+
+### `GET /v1/sessions/{code}/start`
+
+What an agent reads when it begins or resumes, in one call: the session as `GET
+/v1/sessions/{code}` answers it, the [inbox](#get-v1inbox), the active
+[knowledge](#knowledge-shared-memory) entries and the active [reservations](#reservations). Like
+the inbox, it marks the cancellations and alerts it returns as seen.
+
+```json
+{
+  "session": {"session": {"code": "C3-7K2M-9QXD", "…": "…"}, "you": "AG2", "agents": [], "threads": []},
+  "inbox": {"you": "AG2", "empty": true, "threads": [], "to_ack": [], "cancelled": [], "alerts": []},
+  "knowledge": [{"id": "K1", "topic": "deploy", "…": "…"}],
+  "reservations": [{"id": "R1", "pattern": "repo:c3/lib/**", "…": "…"}]
+}
+```
 
 ### `POST /v1/sessions/{code}/leave`
 

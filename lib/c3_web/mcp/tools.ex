@@ -118,6 +118,26 @@ defmodule C3Web.MCP.Tools do
       required: ["session_code", "secret"]
     },
     %{
+      name: "c3_start",
+      route: {:get, "/sessions/:code/start"},
+      join_route: {:post, "/sessions/:code/join", %{"start" => true}},
+      description:
+        "Begin or resume your part in a session in one call. With your token: resume. With " <>
+          "session_code and secret (no token): join, as c3_join_session — keep the token it " <>
+          "returns. Answers the session (agents, threads), your inbox, the active shared memory " <>
+          "and the active reservations. Start the watcher after it, as the skill says.",
+      properties: %{
+        "token" => %{
+          "type" => "string",
+          "description" => "Your agent token, to resume. Omit it to join."
+        },
+        "session_code" => %{"type" => "string", "description" => "To join: the session code."},
+        "secret" => %{"type" => "string", "description" => "To join: the security number."},
+        "agent_label" => %{"type" => "string", "description" => "To join: optional label."}
+      },
+      required: []
+    },
+    %{
       name: "c3_session",
       route: {:get, "/sessions/:code"},
       description: "The session: its agents (with presence) and a summary of its threads.",
@@ -509,12 +529,14 @@ defmodule C3Web.MCP.Tools do
 
   The arguments are not checked against the schema here: they go to REST as they come, so a
   missing or wrong one fails exactly as it would there (no token → `401`, no title → `422`).
-  A missing path argument becomes `-`, which no session or thread is.
+  A missing path argument becomes `-`, which no session or thread is. A tool with a
+  `join_route` (`c3_start`) takes it when called with a `session_code` and no `token`.
   """
   def request(name, args) when is_map(args) do
     with {:ok, tool} <- fetch(name) do
-      {method, route} = tool.route
+      {method, route, fixed_body} = route(tool, args)
       {query, body} = args |> Map.drop(@not_body) |> Map.split(Map.get(tool, :query, []))
+      body = Map.merge(body, fixed_body)
 
       {:ok,
        %{
@@ -530,6 +552,12 @@ defmodule C3Web.MCP.Tools do
        }}
     end
   end
+
+  defp route(%{join_route: {method, route, body}}, %{"session_code" => code} = args)
+       when is_binary(code) and not is_map_key(args, "token"),
+       do: {method, route, body}
+
+  defp route(%{route: {method, route}}, _args), do: {method, route, %{}}
 
   defp fetch(name) do
     case Map.fetch(@by_name, name) do

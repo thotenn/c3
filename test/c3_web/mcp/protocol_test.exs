@@ -39,7 +39,8 @@ defmodule C3Web.MCP.ProtocolTest do
       assert result["instructions"] =~ "token"
     end
 
-    test "tools/list is stable and every tool but create/join takes the token", %{conn: conn} do
+    test "tools/list is stable and every tool but create/join/start requires the token",
+         %{conn: conn} do
       %{"result" => %{"tools" => tools, "ttlMs" => _, "cacheScope" => "public"}} =
         conn |> mcp("tools/list") |> json_response(200)
 
@@ -53,9 +54,13 @@ defmodule C3Web.MCP.ProtocolTest do
                 c3_claim c3_finish c3_reopen c3_leave c3_close_session) -- names == []
 
       for %{"name" => name, "inputSchema" => schema} <- tools,
-          name not in ~w(c3_create_session c3_join_session) do
+          name not in ~w(c3_create_session c3_join_session c3_start) do
         assert "token" in schema["required"], "#{name} does not require the token"
       end
+
+      # c3_start resumes with a token or joins with a code and secret: neither is required.
+      start = Enum.find(tools, &(&1["name"] == "c3_start"))
+      assert ~w(token session_code secret) -- Map.keys(start["inputSchema"]["properties"]) == []
     end
 
     test "ping answers an empty result", %{conn: conn} do

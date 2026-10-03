@@ -220,6 +220,42 @@ defmodule C3Web.V1.SessionControllerTest do
     end
   end
 
+  describe "start" do
+    test "GET start resumes: the session, inbox, memory and reservations; seen alerts go" do
+      %{"session_code" => code, "secret" => secret, "agent" => %{"token" => t1}} =
+        create(fresh_conn())
+
+      join(fresh_conn(), code, %{"secret" => "000000x"})
+
+      assert %{
+               "session" => %{"you" => "AG1", "session" => %{"code" => ^code}, "agents" => [_]},
+               "inbox" => %{"alerts" => [%{"type" => "security.join_failed"}]},
+               "knowledge" => [],
+               "reservations" => []
+             } =
+               fresh_conn()
+               |> authed(t1)
+               |> get(~p"/v1/sessions/#{code}/start")
+               |> json_response(200)
+
+      assert %{"inbox" => %{"empty" => true}} =
+               fresh_conn()
+               |> authed(t1)
+               |> get(~p"/v1/sessions/#{code}/start")
+               |> json_response(200)
+
+      body = fresh_conn() |> join(code, %{"secret" => secret}) |> json_response(201)
+      refute Map.has_key?(body, "start"), "a plain join answers as before"
+
+      other = create(fresh_conn())
+
+      assert fresh_conn()
+             |> authed(t1)
+             |> get(~p"/v1/sessions/#{other["session_code"]}/start")
+             |> json_response(403)
+    end
+  end
+
   describe "unknown codes (enumeration)" do
     test "count as failures and ban at the 5th of the day, not before", %{conn: conn} do
       ip = unique_ip()

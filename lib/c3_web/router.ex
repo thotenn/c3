@@ -113,6 +113,7 @@ defmodule C3Web.Router do
       pipe_through :agent
 
       get "/sessions/:code", SessionController, :show
+      get "/sessions/:code/start", SessionController, :start
       post "/sessions/:code/leave", SessionController, :leave
       post "/sessions/:code/close", SessionController, :close
       post "/sessions/:code/unlock", SessionController, :unlock

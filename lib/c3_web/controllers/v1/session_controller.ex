@@ -1,8 +1,14 @@
 defmodule C3Web.V1.SessionController do
-  @moduledoc "`/v1/sessions`: create, join, show, leave, close, unlock and rotate the secret (spec, *API › Sesión*)."
+  @moduledoc """
+  `/v1/sessions`: create, join, show, start, leave, close, unlock and rotate the secret (spec,
+  *API › Sesión*). `start` — and a join with `start: true` — answers in one call what an agent
+  reads when it begins or resumes: the session, its inbox, the active shared memory and the
+  active reservations.
+  """
   use C3Web, :controller
 
-  alias C3.{Sessions, Threads}
+  alias C3.{Knowledge, Reservations, Sessions, Threads}
+  alias C3Web.V1.InboxController
 
   action_fallback C3Web.V1.FallbackController
 
@@ -14,19 +20,23 @@ defmodule C3Web.V1.SessionController do
 
   def join(conn, %{"code" => code} = params) do
     with {:ok, joined} <- Sessions.join_session(code, params, meta(conn)) do
+      joined =
+        if params["start"] in [true, "true"],
+          do: Map.put(joined, :start, start_assigns(joined.session, joined.agent)),
+          else: joined
+
       conn |> put_status(:created) |> render(:joined, joined)
     end
   end
 
   def show(conn, _params) do
     %{current_session: session, current_agent: agent} = conn.assigns
+    render(conn, :show, show_assigns(session, agent))
+  end
 
-    render(conn, :show,
-      session: session,
-      you: agent,
-      agents: Sessions.list_agents(session),
-      threads: Threads.list_threads(session, preload: :opened_by_agent)
-    )
+  def start(conn, _params) do
+    %{current_session: session, current_agent: agent} = conn.assigns
+    render(conn, :start, start_assigns(session, agent))
   end
 
   def leave(conn, _params) do
@@ -58,6 +68,28 @@ defmodule C3Web.V1.SessionController do
       |> put_resp_header("cache-control", "no-store")
       |> json(%{secret: secret, joins_locked: false, unlocked: unlocked?})
     end
+  end
+
+  defp show_assigns(session, agent) do
+    %{
+      session: session,
+      you: agent,
+      agents: Sessions.list_agents(session),
+      threads: Threads.list_threads(session, preload: :opened_by_agent)
+    }
+  end
+
+  # Reading the inbox marks its cancellations and alerts seen, as `GET /v1/inbox` does.
+  defp start_assigns(session, agent) do
+    {:ok, knowledge} = Knowledge.recall(agent)
+    {:ok, reservations} = Reservations.list(agent)
+
+    %{
+      show: show_assigns(session, agent),
+      inbox: InboxController.inbox(agent),
+      knowledge: knowledge,
+      reservations: reservations
+    }
   end
 
   defp meta(conn) do
